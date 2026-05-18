@@ -14,7 +14,8 @@
 		Wifi,
 		WifiOff
 	} from 'lucide-svelte';
-	import { RadioGroup, Tabs } from 'bits-ui';
+	import { DatePicker, Meter, Tabs } from 'bits-ui';
+	import { parseDate, type DateValue } from '@internationalized/date';
 	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { onMount } from 'svelte';
 	import { buildPeriodSummaries, getCurrentBalance, periodKey, readablePeriod } from '$lib/reporting';
@@ -61,7 +62,7 @@
 	let selectedEntryType: 'expense' | 'income' = 'expense';
 	let reviewEntryType: 'expense' | 'income' = 'expense';
 	let grain: PeriodGrain = 'month';
-	let selectedDate = todayInputValue();
+	let selectedDate: DateValue = parseDate(todayInputValue());
 	let selectedAccountId = '';
 	let selectedCategoryId = '';
 	let isOnline = true;
@@ -198,6 +199,23 @@
 	$: entryTypeTabIndex = selectedEntryType === 'income' ? 1 : 0;
 	$: expenseCategories = categories.filter((category) => normalizeCategoryType(category.type, category.name) === 'expense');
 	$: budgetComparisonItems = buildBudgetComparisonItems(expenseCategories, currentSummary?.categories ?? []);
+	$: currentCategoryTotals = new Map((currentSummary?.categories ?? []).map((item) => [item.categoryId, item]));
+	$: homeCategoryProgress = categories.map((category) => {
+		const totals = currentCategoryTotals.get(category.id);
+		const categoryType = normalizeCategoryType(category.type, category.name);
+		const amount = categoryType === 'income' ? totals?.income ?? 0 : totals?.spent ?? 0;
+		const target = Math.max(0, category.monthlyTarget);
+		const meterMax = target > 0 ? target : Math.max(amount, 1);
+		const meterPercent = Math.min(100, Math.max(0, (amount / meterMax) * 100));
+
+		return {
+			...category,
+			amount,
+			target,
+			meterMax,
+			meterPercent
+		};
+	});
 	$: desktopBalanceSeries = summaries.length
 		? summaries.slice(0, 8).reverse()
 		: [
@@ -262,7 +280,7 @@
 		const formData = new FormData(form);
 		await action(formData);
 		form.reset();
-		selectedDate = todayInputValue();
+		selectedDate = parseDate(todayInputValue());
 		merchantQuery = '';
 		merchantSuggestions = [];
 		showMerchantSuggestions = false;
@@ -278,7 +296,7 @@
 		try {
 			await finance.addEntry(formData);
 			form.reset();
-			selectedDate = todayInputValue();
+			selectedDate = parseDate(todayInputValue());
 			selectedEntryType = 'expense';
 			merchantQuery = '';
 			merchantSuggestions = [];
@@ -1032,14 +1050,29 @@
 				{/each}
 			</div>
 
-			<section class="settings-list">
+			<section class="settings-list category-progress-list">
 				<h2>Categories</h2>
-				{#each categories as category}
+				{#each homeCategoryProgress as category}
 					<article>
 						<span style={`--swatch:${category.color}`}></span>
-						<div>
-							<strong>{categoryEmoji(category)} {category.name}</strong>
-							<small>{categoryTypeLabel(category.type)} · Target {currency(category.monthlyTarget)}</small>
+						<div class="category-progress-content">
+							<div class="category-progress-head">
+								<div>
+									<strong>{categoryEmoji(category)} {category.name}</strong>
+									<small>{categoryTypeLabel(category.type)} · Target {currency(category.target)}</small>
+								</div>
+								<b>{currency(category.amount)}</b>
+							</div>
+							<Meter.Root
+								class="category-progress-meter"
+								value={category.amount}
+								min={0}
+								max={category.meterMax}
+								aria-label={`${category.name} progress`}
+								aria-valuetext={`${currency(category.amount)} of ${currency(category.target)} target`}
+							>
+								<div class="category-progress-fill" style={`--swatch:${category.color};transform:translateX(-${100 - category.meterPercent}%);`}></div>
+							</Meter.Root>
 						</div>
 					</article>
 				{/each}
@@ -1155,22 +1188,13 @@
 				</header>
 
 				<form class="form-card" on:submit|preventDefault={(event) => submitMovement(event, 'mobile')}>
-					<RadioGroup.Root
-						bind:value={selectedEntryType}
-						name="type"
-						class="bits-radio-group"
-						orientation="horizontal"
-						style={`--active-index:${entryTypeTabIndex}`}
-					>
-					<RadioGroup.Item value="expense" class="bits-radio-item">
-						<span class="bits-radio-indicator"></span>
-						Expense
-					</RadioGroup.Item>
-					<RadioGroup.Item value="income" class="bits-radio-item">
-						<span class="bits-radio-indicator"></span>
-						Income
-					</RadioGroup.Item>
-				</RadioGroup.Root>
+					<Tabs.Root bind:value={selectedEntryType} class="entry-type-tabs-root">
+						<Tabs.List class="entry-type-tabs" aria-label="Entry type" style={`--active-index:${entryTypeTabIndex}`}>
+							<Tabs.Trigger value="expense" class="entry-type-tab">Expense</Tabs.Trigger>
+							<Tabs.Trigger value="income" class="entry-type-tab">Income</Tabs.Trigger>
+						</Tabs.List>
+					</Tabs.Root>
+					<input name="type" type="hidden" value={selectedEntryType} />
 				<label>
 					Amount
 					<input name="amount" type="text" inputmode="decimal" placeholder="0.00" on:input={formatAmountInput} required />
@@ -1226,7 +1250,61 @@
 				<div class="field-grid">
 					<label>
 						Date
-						<input bind:value={selectedDate} name="occurredOn" type="date" />
+						<DatePicker.Root bind:value={selectedDate} weekdayFormat="short" fixedWeeks={true}>
+							<div class="date-picker-field">
+								<DatePicker.Input name="occurredOn" class="date-picker-input">
+									{#snippet children({ segments })}
+										{#each segments as segment, index (`${segment.part}-${index}`)}
+											{#if segment.part === 'literal'}
+												<span class="date-picker-literal">{segment.value}</span>
+											{:else}
+												<DatePicker.Segment part={segment.part} class="date-picker-segment">
+													{segment.value}
+												</DatePicker.Segment>
+											{/if}
+										{/each}
+									{/snippet}
+								</DatePicker.Input>
+								<DatePicker.Trigger class="date-picker-trigger" aria-label="Open calendar">
+									<CalendarDays size={18} />
+								</DatePicker.Trigger>
+							</div>
+							<DatePicker.Portal>
+								<DatePicker.Content class="date-picker-content" sideOffset={8} align="end">
+									<DatePicker.Calendar class="date-picker-calendar">
+										{#snippet children({ months, weekdays })}
+											<DatePicker.Header class="date-picker-calendar-header">
+												<DatePicker.PrevButton class="date-picker-nav-button" aria-label="Previous month">‹</DatePicker.PrevButton>
+												<DatePicker.Heading class="date-picker-heading" />
+												<DatePicker.NextButton class="date-picker-nav-button" aria-label="Next month">›</DatePicker.NextButton>
+											</DatePicker.Header>
+											{#each months as month}
+												<DatePicker.Grid class="date-picker-grid">
+													<DatePicker.GridHead>
+														<DatePicker.GridRow class="date-picker-grid-row">
+															{#each weekdays as day}
+																<DatePicker.HeadCell class="date-picker-head-cell">{day}</DatePicker.HeadCell>
+															{/each}
+														</DatePicker.GridRow>
+													</DatePicker.GridHead>
+													<DatePicker.GridBody>
+														{#each month.weeks as weekDates}
+															<DatePicker.GridRow class="date-picker-grid-row">
+																{#each weekDates as date}
+																	<DatePicker.Cell {date} month={month.value}>
+																		<DatePicker.Day class="date-picker-day" />
+																	</DatePicker.Cell>
+																{/each}
+															</DatePicker.GridRow>
+														{/each}
+													</DatePicker.GridBody>
+												</DatePicker.Grid>
+											{/each}
+										{/snippet}
+									</DatePicker.Calendar>
+								</DatePicker.Content>
+							</DatePicker.Portal>
+						</DatePicker.Root>
 					</label>
 					<label>
 						Note
@@ -1566,21 +1644,21 @@
 			<strong>FinSet</strong>
 		</div>
 		<nav aria-label="Desktop sections">
-			<button class:active={desktopScreen === 'dashboard'} type="button" on:click={() => (desktopScreen = 'dashboard')}>
+			<a href="#dashboard" class:active={desktopScreen === 'dashboard'} on:click|preventDefault={() => (desktopScreen = 'dashboard')}>
 				<Home size={18} /> Dashboard
-			</button>
-			<button class:active={desktopScreen === 'transactions'} type="button" on:click={() => (desktopScreen = 'transactions')}>
+			</a>
+			<a href="#transactions" class:active={desktopScreen === 'transactions'} on:click|preventDefault={() => (desktopScreen = 'transactions')}>
 				<ClipboardList size={18} /> Transactions
-			</button>
-			<button class:active={desktopScreen === 'accounts'} type="button" on:click={() => (desktopScreen = 'accounts')}>
+			</a>
+			<a href="#wallet" class:active={desktopScreen === 'accounts'} on:click|preventDefault={() => (desktopScreen = 'accounts')}>
 				<CreditCard size={18} /> Accounts
-			</button>
-			<button class:active={desktopScreen === 'review'} type="button" on:click={() => (desktopScreen = 'review')}>
+			</a>
+			<a href="#review" class:active={desktopScreen === 'review'} on:click|preventDefault={() => (desktopScreen = 'review')}>
 				<BarChart3 size={18} /> Review
-			</button>
-			<button class:active={desktopScreen === 'settings'} type="button" on:click={() => (desktopScreen = 'settings')}>
+			</a>
+			<a href="#settings" class:active={desktopScreen === 'settings'} on:click|preventDefault={() => (desktopScreen = 'settings')}>
 				<Settings size={18} /> Settings
-			</button>
+			</a>
 		</nav>
 		<div class="sidebar-footer">
 			<button type="button" on:click={() => finance.syncNow()}><RefreshCw size={17} /> Sync</button>
@@ -1598,10 +1676,17 @@
 					<button title="Search transactions" type="button" on:click={() => (desktopScreen = 'transactions')}>
 						<Search size={20} />
 					</button>
-					<button class="add-desktop" type="button" on:click={() => (desktopScreen = 'add')}>
-						<Plus size={18} />
-						Add transaction
-					</button>
+					{#if desktopScreen === 'add'}
+						<span class="desktop-action-badge">
+							<Plus size={18} />
+							Add transaction
+						</span>
+					{:else}
+						<button class="add-desktop" type="button" on:click={() => (desktopScreen = 'add')}>
+							<Plus size={18} />
+							Add transaction
+						</button>
+					{/if}
 				</div>
 			</header>
 
@@ -2025,22 +2110,13 @@
 						</div>
 					</div>
 					<form class="desktop-form-grid" on:submit|preventDefault={(event) => submitMovement(event, 'desktop')}>
-						<RadioGroup.Root
-							bind:value={selectedEntryType}
-							name="type"
-							class="bits-radio-group"
-							orientation="horizontal"
-							style={`--active-index:${entryTypeTabIndex}`}
-						>
-							<RadioGroup.Item value="expense" class="bits-radio-item">
-								<span class="bits-radio-indicator"></span>
-								Expense
-							</RadioGroup.Item>
-							<RadioGroup.Item value="income" class="bits-radio-item">
-								<span class="bits-radio-indicator"></span>
-								Income
-							</RadioGroup.Item>
-						</RadioGroup.Root>
+						<Tabs.Root bind:value={selectedEntryType} class="entry-type-tabs-root">
+							<Tabs.List class="entry-type-tabs" aria-label="Entry type" style={`--active-index:${entryTypeTabIndex}`}>
+								<Tabs.Trigger value="expense" class="entry-type-tab">Expense</Tabs.Trigger>
+								<Tabs.Trigger value="income" class="entry-type-tab">Income</Tabs.Trigger>
+							</Tabs.List>
+						</Tabs.Root>
+						<input name="type" type="hidden" value={selectedEntryType} />
 						<label>
 							Amount
 							<input name="amount" type="text" inputmode="decimal" placeholder="0.00" on:input={formatAmountInput} required />
@@ -2096,7 +2172,61 @@
 						<div class="field-grid">
 							<label>
 								Date
-								<input bind:value={selectedDate} name="occurredOn" type="date" />
+								<DatePicker.Root bind:value={selectedDate} weekdayFormat="short" fixedWeeks={true}>
+									<div class="date-picker-field">
+										<DatePicker.Input name="occurredOn" class="date-picker-input">
+											{#snippet children({ segments })}
+												{#each segments as segment, index (`desktop-${segment.part}-${index}`)}
+													{#if segment.part === 'literal'}
+														<span class="date-picker-literal">{segment.value}</span>
+													{:else}
+														<DatePicker.Segment part={segment.part} class="date-picker-segment">
+															{segment.value}
+														</DatePicker.Segment>
+													{/if}
+												{/each}
+											{/snippet}
+										</DatePicker.Input>
+										<DatePicker.Trigger class="date-picker-trigger" aria-label="Open calendar">
+											<CalendarDays size={18} />
+										</DatePicker.Trigger>
+									</div>
+									<DatePicker.Portal>
+										<DatePicker.Content class="date-picker-content" sideOffset={8} align="end">
+											<DatePicker.Calendar class="date-picker-calendar">
+												{#snippet children({ months, weekdays })}
+													<DatePicker.Header class="date-picker-calendar-header">
+														<DatePicker.PrevButton class="date-picker-nav-button" aria-label="Previous month">‹</DatePicker.PrevButton>
+														<DatePicker.Heading class="date-picker-heading" />
+														<DatePicker.NextButton class="date-picker-nav-button" aria-label="Next month">›</DatePicker.NextButton>
+													</DatePicker.Header>
+													{#each months as month}
+														<DatePicker.Grid class="date-picker-grid">
+															<DatePicker.GridHead>
+																<DatePicker.GridRow class="date-picker-grid-row">
+																	{#each weekdays as day}
+																		<DatePicker.HeadCell class="date-picker-head-cell">{day}</DatePicker.HeadCell>
+																	{/each}
+																</DatePicker.GridRow>
+															</DatePicker.GridHead>
+															<DatePicker.GridBody>
+																{#each month.weeks as weekDates}
+																	<DatePicker.GridRow class="date-picker-grid-row">
+																		{#each weekDates as date}
+																			<DatePicker.Cell {date} month={month.value}>
+																				<DatePicker.Day class="date-picker-day" />
+																			</DatePicker.Cell>
+																		{/each}
+																	</DatePicker.GridRow>
+																{/each}
+															</DatePicker.GridBody>
+														</DatePicker.Grid>
+													{/each}
+												{/snippet}
+											</DatePicker.Calendar>
+										</DatePicker.Content>
+									</DatePicker.Portal>
+								</DatePicker.Root>
 							</label>
 							<label>
 								Note

@@ -444,7 +444,7 @@ form {
 	grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.bits-radio-group {
+.entry-type-tabs {
 	background: color-mix(in srgb, var(--ink) 6%, transparent);
 	border: 1px solid var(--line);
 	border-radius: 999px;
@@ -456,7 +456,7 @@ form {
 	position: relative;
 }
 
-.bits-radio-group::before {
+.entry-type-tabs::before {
 	background: var(--primary);
 	border-radius: 999px;
 	bottom: 0.25rem;
@@ -471,7 +471,7 @@ form {
 	z-index: 0;
 }
 
-.bits-radio-item {
+.entry-type-tab {
 	align-items: center;
 	background: transparent;
 	border: 0;
@@ -490,18 +490,140 @@ form {
 	z-index: 1;
 }
 
-.bits-radio-indicator {
-	display: none;
-}
-
-.bits-radio-item[data-state='checked'] {
+.entry-type-tab[data-state='active'] {
 	background: transparent;
-	border-color: transparent;
 	color: #ffffff;
 }
 
+.date-picker-field {
+	align-items: center;
+	background: var(--field, #ffffff);
+	border: 1px solid var(--line, rgba(17, 24, 43, 0.08));
+	border-radius: 16px;
+	display: flex;
+	gap: 0.2rem;
+	min-height: 3rem;
+	padding: 0.35rem 0.5rem 0.35rem 0.7rem;
+}
+
+.date-picker-input {
+	align-items: center;
+	display: inline-flex;
+	flex: 1;
+	font-weight: 700;
+	gap: 0.12rem;
+	min-height: 2.2rem;
+	outline: 0;
+}
+
+.date-picker-literal,
+.date-picker-segment {
+	color: var(--ink);
+	font-size: 1rem;
+}
+
+.date-picker-literal {
+	opacity: 0.72;
+}
+
+.date-picker-segment {
+	border-radius: 6px;
+	padding: 0.08rem 0.18rem;
+}
+
+.date-picker-segment[data-focused] {
+	background: color-mix(in srgb, var(--primary) 26%, transparent);
+	outline: 0;
+}
+
+.date-picker-trigger {
+	background: transparent;
+	border: 0;
+	box-shadow: none;
+	color: var(--muted);
+	height: 2rem;
+	padding: 0;
+	width: 2rem;
+}
+
+.date-picker-content {
+	background: var(--panel);
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	box-shadow: var(--shadow-md);
+	padding: 0.75rem;
+	z-index: 90;
+}
+
+.date-picker-calendar {
+	display: grid;
+	gap: 0.5rem;
+}
+
+.date-picker-calendar-header {
+	align-items: center;
+	display: flex;
+	justify-content: space-between;
+}
+
+.date-picker-heading {
+	font-size: 0.98rem;
+	font-weight: 700;
+}
+
+.date-picker-nav-button {
+	background: transparent;
+	border: 0;
+	border-radius: 8px;
+	color: var(--ink);
+	font-size: 1.2rem;
+	height: 1.8rem;
+	width: 1.8rem;
+}
+
+.date-picker-grid {
+	border-collapse: collapse;
+	width: 100%;
+}
+
+.date-picker-grid-row {
+	height: 2rem;
+}
+
+.date-picker-head-cell {
+	color: var(--muted);
+	font-size: 0.75rem;
+	font-weight: 700;
+	padding-bottom: 0.25rem;
+	text-align: center;
+}
+
+.date-picker-day {
+	align-items: center;
+	border-radius: 8px;
+	display: inline-flex;
+	font-size: 0.92rem;
+	height: 1.85rem;
+	justify-content: center;
+	margin: 0 auto;
+	width: 1.85rem;
+}
+
+.date-picker-day[data-selected] {
+	background: var(--primary);
+	color: #fff;
+}
+
+.date-picker-day[data-today]:not([data-selected]) {
+	border: 1px solid var(--line);
+}
+
+.date-picker-day[data-outside-month] {
+	opacity: 0.45;
+}
+
 .primary-button,
-.form-card button:not(.bits-radio-item):not(.bits-select-trigger),
+.form-card button:not(.entry-type-tab):not(.bits-select-trigger),
 .button-row button {
 	background: var(--primary);
 	border-radius: 16px;
@@ -1230,7 +1352,7 @@ body {
 	outline: 0;
 }
 
-.form-card button:not(.bits-radio-item):not(.bits-select-trigger):not(.primary-button),
+.form-card button:not(.entry-type-tab):not(.bits-select-trigger):not(.primary-button),
 .button-row button {
 	background: var(--primary);
 	border: 1px solid var(--primary);
@@ -1253,7 +1375,7 @@ body {
 	border-radius: 999px;
 }
 
-.form-card button:not(.bits-radio-item):not(.bits-select-trigger):hover,
+.form-card button:not(.entry-type-tab):not(.bits-select-trigger):hover,
 .button-row button:hover {
 	background: var(--primary-pressed);
 }
@@ -1494,6 +1616,51 @@ body {
 	width: 0.9rem;
 }
 
+.category-progress-list article {
+	align-items: start;
+	grid-template-columns: auto minmax(0, 1fr);
+}
+
+.category-progress-content {
+	display: grid;
+	gap: 0.45rem;
+	min-width: 0;
+}
+
+.category-progress-head {
+	align-items: baseline;
+	display: grid;
+	gap: 0.5rem;
+	grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.category-progress-head b {
+	font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+	font-size: 0.84rem;
+	font-weight: 800;
+	white-space: nowrap;
+}
+
+.category-progress-meter {
+	background: color-mix(in srgb, var(--line) 72%, transparent);
+	border-radius: 999px;
+	height: 0.44rem;
+	overflow: hidden;
+	position: relative;
+}
+
+.category-progress-fill {
+	background: var(--swatch);
+	border-radius: inherit;
+	height: 100%;
+	left: 0;
+	position: absolute;
+	top: 0;
+	transform-origin: left center;
+	transition: transform 280ms ease;
+	width: 100%;
+}
+
 @media (min-width: 768px) {
 	body {
 		background: var(--paper);
@@ -1543,7 +1710,7 @@ body {
 
 	.desktop-sidebar nav {
 		display: grid;
-		gap: 0.45rem;
+		gap: 0.2rem;
 		align-content: start;
 	}
 
@@ -1556,11 +1723,11 @@ body {
 	.add-desktop {
 		align-items: center;
 		background: transparent;
-		border: 1px solid var(--line);
-		border-radius: var(--radius-sm);
+		border: 0;
+		border-radius: 10px;
 		color: var(--ink);
 		display: inline-flex;
-		font-weight: 900;
+		font-weight: 700;
 		gap: 0.6rem;
 		justify-content: flex-start;
 		min-height: 2.8rem;
@@ -1571,13 +1738,19 @@ body {
 
 	.desktop-sidebar a.active,
 	.desktop-sidebar a:hover,
-	.desktop-sidebar button.active,
-	.desktop-sidebar button:hover,
 	.sidebar-footer button,
 	.add-desktop {
 		background: var(--primary);
 		border-color: var(--primary);
 		color: var(--paper);
+	}
+
+	.desktop-sidebar nav a:not(.active):hover {
+		background: color-mix(in srgb, var(--ink) 8%, transparent);
+	}
+
+	.desktop-sidebar nav svg {
+		color: inherit;
 	}
 
 	.sidebar-footer {
@@ -1632,6 +1805,20 @@ body {
 	.desktop-actions,
 	.desktop-filter-row {
 		gap: 0.75rem;
+	}
+
+	.desktop-action-badge {
+		align-items: center;
+		background: color-mix(in srgb, var(--ink) 7%, transparent);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		color: var(--muted);
+		display: inline-flex;
+		font-weight: 700;
+		gap: 0.55rem;
+		min-height: 2.8rem;
+		padding: 0.7rem 0.9rem;
+		white-space: nowrap;
 	}
 
 	.desktop-grain-trigger {
@@ -1773,7 +1960,7 @@ body {
 		margin-top: 0.75rem;
 	}
 
-	.desktop-form-grid button,
+	.desktop-form-grid button:not(.entry-type-tab),
 	.desktop-card .button-row button {
 		background: var(--primary);
 		border: 1px solid var(--primary);
