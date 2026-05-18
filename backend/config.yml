@@ -1,0 +1,13 @@
+server:
+  port: "8080"
+  logLevel: "info"
+
+database:
+  url: "postgres://postgres:postgres@localhost:5432/expense_tracker?sslmode=disable"
+
+cors:
+  allowOrigin: "http://localhost:3000"
+
+auth:
+  jwtSecret: "local-dev-secret"
+  tokenExpiryHours: 168

@@ -1,0 +1,12 @@
+node_modules
+.svelte-kit
+build
+dev-dist
+.vite
+.env
+.env.*
+!.env.example
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*

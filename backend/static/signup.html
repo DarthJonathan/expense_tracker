@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Expense Tracker Signup</title>
+		<style>
+			:root {
+				color-scheme: light;
+				font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+			}
+			body {
+				background: #f4f5ec;
+				color: #161914;
+				margin: 0;
+				min-height: 100vh;
+				padding: 1rem;
+			}
+			main {
+				background: #fbfcf6;
+				border: 1px solid #ccd0c0;
+				margin: 2rem auto;
+				max-width: 30rem;
+				padding: 1rem;
+			}
+			h1 {
+				font-size: 1.6rem;
+				margin: 0 0 0.5rem;
+			}
+			p {
+				color: #5d655a;
+				margin: 0 0 1rem;
+			}
+			form {
+				display: grid;
+				gap: 0.75rem;
+			}
+			input,
+			button {
+				border: 1px solid #c8ccbe;
+				font: inherit;
+				min-height: 2.8rem;
+				padding: 0.5rem 0.7rem;
+			}
+			button {
+				background: #df704f;
+				border-color: #df704f;
+				color: #fff;
+				cursor: pointer;
+				font-weight: 700;
+			}
+			button:disabled {
+				cursor: wait;
+				opacity: 0.75;
+			}
+			.status {
+				border: 1px solid #c8ccbe;
+				font-size: 0.95rem;
+				margin-top: 1rem;
+				padding: 0.7rem;
+				white-space: pre-wrap;
+				word-break: break-word;
+			}
+			.status.error {
+				border-color: #9c332b;
+				color: #9c332b;
+			}
+			.status.success {
+				border-color: #4b5745;
+				color: #4b5745;
+			}
+			code {
+				background: #ecefdf;
+				padding: 0.12rem 0.25rem;
+			}
+		</style>
+	</head>
+	<body>
+		<main>
+			<h1>Create account</h1>
+			<p>This calls <code>/api/v1/auth/register</code> on this backend.</p>
+			<form id="signup-form">
+				<input name="email" type="email" placeholder="Email" required />
+				<input name="password" type="password" placeholder="Password (min 8 chars)" minlength="8" required />
+				<input name="displayName" placeholder="Display name (optional)" />
+				<button id="submit-btn" type="submit">Sign up</button>
+			</form>
+			<div id="status" class="status" hidden></div>
+		</main>
+
+		<script>
+			const form = document.getElementById("signup-form");
+			const submitBtn = document.getElementById("submit-btn");
+			const statusEl = document.getElementById("status");
+
+			function showStatus(message, kind) {
+				statusEl.hidden = false;
+				statusEl.className = `status ${kind}`;
+				statusEl.textContent = message;
+			}
+
+			form.addEventListener("submit", async (event) => {
+				event.preventDefault();
+				submitBtn.disabled = true;
+				showStatus("Creating account...", "");
+
+				const payload = {
+					email: form.email.value.trim(),
+					password: form.password.value,
+					displayName: form.displayName.value.trim()
+				};
+
+				try {
+					const response = await fetch("/api/v1/auth/register", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify(payload)
+					});
+					const data = await response.json();
+					if (!response.ok || !data.success) {
+						throw new Error(data.error || `Signup failed (${response.status})`);
+					}
+					const user = data?.data?.user?.email || "created";
+					showStatus(`Signup successful for ${user}\nJWT issued and ready to use.`, "success");
+					form.reset();
+				} catch (error) {
+					showStatus(error instanceof Error ? error.message : "Signup failed", "error");
+				} finally {
+					submitBtn.disabled = false;
+				}
+			});
+		</script>
+	</body>
+</html>

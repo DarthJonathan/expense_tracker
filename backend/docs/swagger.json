@@ -1,0 +1,753 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Aggregator for all social media",
+        "title": "One Social",
+        "termsOfService": "https://onesocial.io",
+        "contact": {
+            "name": "John Nate",
+            "url": "https://jonathanhosea.dev",
+            "email": "me@jonathanhosea.dev"
+        },
+        "license": {
+            "name": "Apache 2.0",
+            "url": "http://www.apache.org/licenses/LICENSE-2.0.html"
+        },
+        "version": "1.0"
+    },
+    "host": "api.onesocial.kube.lucasgrey.dev",
+    "basePath": "/",
+    "paths": {
+        "/auth/login": {
+            "post": {
+                "description": "login and retrieve JWT token",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Login user",
+                "parameters": [
+                    {
+                        "description": "Auth Request",
+                        "name": "data",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.AuthRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/register": {
+            "post": {
+                "description": "register new user and retrieve JWT token",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Register new user",
+                "parameters": [
+                    {
+                        "description": "Auth Request",
+                        "name": "data",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.AuthRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/user/{userId}": {
+            "post": {
+                "description": "See current user of jwt",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "User get user info",
+                "parameters": [
+                    {
+                        "description": "Auth Request",
+                        "name": "data",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.AuthRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/callback/reddit": {
+            "get": {
+                "description": "callback to retrieve reddit auth token",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "reddit"
+                ],
+                "summary": "RedditCallback",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/reddit/auth": {
+            "get": {
+                "description": "callback to retrieve reddit auth token",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "reddit"
+                ],
+                "summary": "RedditGenerateAuth",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.AuthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/home": {
+            "get": {
+                "description": "Loading home page posts from multiple",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "HomeV1 API",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.PostResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.PostResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/post/{social}/{postId}": {
+            "get": {
+                "description": "Load single post",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "socials"
+                ],
+                "summary": "Look at single post",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.PostResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.PostResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/top/category/{social}/{category}": {
+            "get": {
+                "description": "Load category top",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "socials"
+                ],
+                "summary": "CategoryTopV1 top API",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.PostResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.PostResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/top/subreddit/{subreddit}": {
+            "get": {
+                "description": "Load subreddit top",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "socials"
+                ],
+                "summary": "SubredditV1 top API",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.PostResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.PostResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/user/categories": {
+            "get": {
+                "description": "Loading user saved categories from multiple socials",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "UserCategoriesV1 API",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/user/category": {
+            "put": {
+                "description": "User index category",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "UserIndexCategoryV1 API",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/user/profile": {
+            "get": {
+                "description": "Loading user profile",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "UserProfileV1 API",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/user/saved": {
+            "get": {
+                "description": "Loading user saved posts from multiple socials",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "UserSavedV1 API",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Sync user saved post from social",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "UserSavedSyncV1 API",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/user/saved/post": {
+            "get": {
+                "description": "Loading single user saved post",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "UserSavedPostV1 API",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.UserResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "dao.Profile": {
+            "type": "object",
+            "properties": {
+                "avatarUrl": {
+                    "type": "string"
+                },
+                "fullName": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                },
+                "website": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.Post": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "images": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "loadableComments": {
+                    "type": "boolean"
+                },
+                "medias": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "nsfw": {
+                    "type": "boolean"
+                },
+                "poster": {
+                    "type": "string"
+                },
+                "score": {
+                    "type": "integer"
+                },
+                "socmed": {
+                    "type": "string"
+                },
+                "timestamp": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.SavedCategories": {
+            "type": "object",
+            "properties": {
+                "application": {
+                    "type": "string"
+                },
+                "category": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "requestedBy": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "userId": {
+                    "type": "string"
+                }
+            }
+        },
+        "model.SubPost": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "children": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.SubPost"
+                    }
+                },
+                "content": {
+                    "type": "string"
+                },
+                "depth": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "images": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "loadableComments": {
+                    "type": "boolean"
+                },
+                "originalPostId": {
+                    "type": "string"
+                },
+                "parentId": {
+                    "type": "string"
+                },
+                "poster": {
+                    "type": "string"
+                },
+                "score": {
+                    "type": "integer"
+                },
+                "socmed": {
+                    "type": "string"
+                },
+                "timestamp": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "request.AuthRequest": {
+            "type": "object",
+            "properties": {
+                "password": {
+                    "type": "string"
+                },
+                "token": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "response.AuthResponse": {
+            "type": "object",
+            "properties": {
+                "expiry": {
+                    "type": "integer"
+                },
+                "fullName": {
+                    "type": "string"
+                },
+                "redditUrlLogin": {
+                    "type": "string"
+                },
+                "resultInfo": {
+                    "$ref": "#/definitions/response.BaseResponse"
+                },
+                "token": {
+                    "type": "string"
+                },
+                "userId": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "response.BaseResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "requestId": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "response.PostResponse": {
+            "type": "object",
+            "properties": {
+                "post": {
+                    "$ref": "#/definitions/model.Post"
+                },
+                "posts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.Post"
+                    }
+                },
+                "resultInfo": {
+                    "$ref": "#/definitions/response.BaseResponse"
+                },
+                "subPosts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.SubPost"
+                    }
+                }
+            }
+        },
+        "response.UserResponse": {
+            "type": "object",
+            "properties": {
+                "post": {
+                    "$ref": "#/definitions/model.Post"
+                },
+                "profile": {
+                    "$ref": "#/definitions/dao.Profile"
+                },
+                "resultInfo": {
+                    "$ref": "#/definitions/response.BaseResponse"
+                },
+                "savedCategories": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.SavedCategories"
+                    }
+                },
+                "savedPosts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.Post"
+                    }
+                },
+                "subPosts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.SubPost"
+                    }
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "Bearer Token": {
+            "type": "basic"
+        }
+    }
+}

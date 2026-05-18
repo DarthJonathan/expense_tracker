@@ -1,0 +1,530 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"expense-tracker/backend/dao"
+	"expense-tracker/backend/request"
+
+	uuid "github.com/hashicorp/go-uuid"
+	"gorm.io/gorm"
+)
+
+type ExpenseService struct {
+	DB *gorm.DB
+}
+
+func NewExpenseService(db *gorm.DB) *ExpenseService {
+	return &ExpenseService{DB: db}
+}
+
+func (s *ExpenseService) ResolveOrCreateUserGroup(ctx context.Context, userID string) (*dao.ExpenseGroup, error) {
+	owner := strings.TrimSpace(userID)
+	if owner == "" {
+		return nil, fmt.Errorf("user is required")
+	}
+
+	group := &dao.ExpenseGroup{}
+	err := s.DB.WithContext(ctx).Raw(`
+		select
+			id::text as id,
+			name,
+			invite_code,
+			created_by::text as created_by,
+			created_at,
+			updated_at,
+			deleted_at
+		from public.expense_groups
+		where created_by = ?::uuid and deleted_at is null
+		order by updated_at desc
+		limit 1
+	`, owner).Scan(group).Error
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(group.ID) != "" {
+		return group, nil
+	}
+
+	return s.CreateGroup(ctx, &request.CreateGroupRequest{
+		Name:      "Household",
+		CreatedBy: owner,
+	})
+}
+
+func (s *ExpenseService) CreateGroup(ctx context.Context, req *request.CreateGroupRequest) (*dao.ExpenseGroup, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+
+	id, err := uuid.GenerateUUID()
+	if err != nil {
+		return nil, fmt.Errorf("generate group id: %w", err)
+	}
+
+	now := time.Now().UTC()
+	inviteCode := strings.ToUpper(strings.ReplaceAll(id, "-", ""))[:6]
+	var createdBy *string
+	if trimmed := strings.TrimSpace(req.CreatedBy); trimmed != "" {
+		createdBy = &trimmed
+	}
+
+	group := &dao.ExpenseGroup{
+		ID:         id,
+		Name:       name,
+		InviteCode: inviteCode,
+		CreatedBy:  createdBy,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	if err := s.DB.WithContext(ctx).Table((dao.ExpenseGroup{}).TableName()).Create(group).Error; err != nil {
+		return nil, err
+	}
+
+	return group, nil
+}
+
+func (s *ExpenseService) CreateAccount(ctx context.Context, groupID string, req *request.CreateAccountRequest) (*dao.ExpenseAccount, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+
+	accountType := strings.ToLower(strings.TrimSpace(req.Type))
+	if accountType == "" {
+		return nil, fmt.Errorf("type is required")
+	}
+
+	switch accountType {
+	case "cash", "bank", "card", "wallet":
+	default:
+		return nil, fmt.Errorf("type must be one of cash, bank, card, wallet")
+	}
+
+	id, err := uuid.GenerateUUID()
+	if err != nil {
+		return nil, fmt.Errorf("generate account id: %w", err)
+	}
+
+	now := time.Now().UTC()
+	color := strings.TrimSpace(req.Color)
+	if color == "" {
+		color = "#4b5745"
+	}
+	icon := normalizeIcon(req.Icon, defaultAccountIcon(accountType))
+
+	account := &dao.ExpenseAccount{
+		ID:             id,
+		GroupID:        groupID,
+		Name:           name,
+		Type:           accountType,
+		OpeningBalance: req.OpeningBalance,
+		Color:          color,
+		Icon:           icon,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	if err := s.DB.WithContext(ctx).Table((dao.ExpenseAccount{}).TableName()).Create(account).Error; err != nil {
+		return nil, err
+	}
+
+	return account, nil
+}
+
+func (s *ExpenseService) ListAccounts(ctx context.Context, groupID string) ([]dao.ExpenseAccount, error) {
+	records := make([]dao.ExpenseAccount, 0)
+	err := s.DB.WithContext(ctx).Raw(`
+		select
+			id::text as id,
+			group_id::text as group_id,
+			name,
+			type,
+			opening_balance,
+			color,
+			icon,
+			created_at,
+			updated_at,
+			deleted_at
+		from public.expense_accounts
+		where group_id = ?::uuid and deleted_at is null
+		order by updated_at desc
+	`, groupID).Scan(&records).Error
+	return records, err
+}
+
+func (s *ExpenseService) CreateCategory(ctx context.Context, groupID string, req *request.CreateCategoryRequest) (*dao.ExpenseCategory, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+
+	id, err := uuid.GenerateUUID()
+	if err != nil {
+		return nil, fmt.Errorf("generate category id: %w", err)
+	}
+
+	now := time.Now().UTC()
+	color := strings.TrimSpace(req.Color)
+	if color == "" {
+		color = "#e7d24e"
+	}
+	categoryType := normalizeCategoryType(req.Type, name)
+	icon := normalizeIcon(req.Icon, defaultCategoryIcon(name))
+
+	category := &dao.ExpenseCategory{
+		ID:            id,
+		GroupID:       groupID,
+		Name:          name,
+		Type:          categoryType,
+		Color:         color,
+		Icon:          icon,
+		MonthlyTarget: req.MonthlyTarget,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := s.DB.WithContext(ctx).Table((dao.ExpenseCategory{}).TableName()).Create(category).Error; err != nil {
+		return nil, err
+	}
+
+	return category, nil
+}
+
+func (s *ExpenseService) ListCategories(ctx context.Context, groupID string) ([]dao.ExpenseCategory, error) {
+	records := make([]dao.ExpenseCategory, 0)
+	err := s.DB.WithContext(ctx).Raw(`
+		select
+			id::text as id,
+			group_id::text as group_id,
+			name,
+			type,
+			color,
+			icon,
+			monthly_target,
+			created_at,
+			updated_at,
+			deleted_at
+		from public.expense_categories
+		where group_id = ?::uuid and deleted_at is null
+		order by updated_at desc
+	`, groupID).Scan(&records).Error
+	return records, err
+}
+
+func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, createdByUserID string, req *request.CreateExpenseRequest) (*dao.ExpenseEntry, error) {
+	if strings.TrimSpace(req.AccountID) == "" {
+		return nil, fmt.Errorf("accountId is required")
+	}
+	if strings.TrimSpace(req.CategoryID) == "" {
+		return nil, fmt.Errorf("categoryId is required")
+	}
+	if req.Amount < 0 {
+		return nil, fmt.Errorf("amount must be >= 0")
+	}
+
+	entryType := strings.ToLower(strings.TrimSpace(req.Type))
+	if entryType == "" {
+		entryType = "expense"
+	}
+	if entryType != "expense" && entryType != "income" {
+		return nil, fmt.Errorf("type must be expense or income")
+	}
+
+	categoryType, err := s.findCategoryType(ctx, groupID, strings.TrimSpace(req.CategoryID))
+	if err != nil {
+		return nil, err
+	}
+	if categoryType != "" && categoryType != entryType {
+		return nil, fmt.Errorf("category type mismatch: category is %s but entry is %s", categoryType, entryType)
+	}
+
+	merchant := strings.TrimSpace(req.Merchant)
+	if merchant == "" {
+		return nil, fmt.Errorf("merchant is required")
+	}
+
+	occurredOn, err := normalizeDate(req.OccurredOn)
+	if err != nil {
+		return nil, err
+	}
+	currencyCode, err := normalizeCurrencyCode(req.Currency)
+	if err != nil {
+		return nil, err
+	}
+
+	id, err := uuid.GenerateUUID()
+	if err != nil {
+		return nil, fmt.Errorf("generate expense id: %w", err)
+	}
+
+	now := time.Now().UTC()
+	var createdBy *string
+	if trimmed := strings.TrimSpace(createdByUserID); trimmed != "" {
+		createdBy = &trimmed
+	}
+
+	expense := &dao.ExpenseEntry{
+		ID:         id,
+		GroupID:    groupID,
+		AccountID:  strings.TrimSpace(req.AccountID),
+		CategoryID: strings.TrimSpace(req.CategoryID),
+		Type:       entryType,
+		Amount:     req.Amount,
+		Currency:   currencyCode,
+		OccurredOn: occurredOn,
+		Merchant:   merchant,
+		Note:       strings.TrimSpace(req.Note),
+		CreatedBy:  createdBy,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Table((dao.ExpenseEntry{}).TableName()).Create(expense).Error; err != nil {
+			return err
+		}
+		return upsertMerchant(tx, merchantFromEntry(groupID, *expense, now))
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return expense, nil
+}
+
+func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *request.ListExpensesRequest) ([]dao.ExpenseEntry, error) {
+	records := make([]dao.ExpenseEntry, 0)
+
+	query := s.DB.WithContext(ctx).Table("public.expense_entries as e").Select(`
+		e.id::text as id,
+		e.group_id::text as group_id,
+		e.account_id::text as account_id,
+		e.category_id::text as category_id,
+		e.type,
+		e.amount,
+		e.currency,
+		to_char(e.occurred_on, 'YYYY-MM-DD') as occurred_on,
+		e.merchant,
+		e.note,
+		e.created_by::text as created_by,
+		e.created_at,
+		e.updated_at,
+		e.deleted_at
+	`).Where("e.group_id = ?::uuid and e.deleted_at is null", groupID)
+
+	if req != nil {
+		entryType := strings.ToLower(strings.TrimSpace(req.Type))
+		if entryType != "" {
+			if entryType != "expense" && entryType != "income" {
+				return nil, fmt.Errorf("type must be expense or income")
+			}
+			query = query.Where("e.type = ?", entryType)
+		}
+
+		if req.MonthsBack > 0 {
+			cutoff := time.Now().UTC().AddDate(0, -req.MonthsBack, 0).Format("2006-01-02")
+			query = query.Where("e.occurred_on >= ?::date", cutoff)
+		}
+
+		keyword := strings.ToLower(strings.TrimSpace(req.Query))
+		if keyword != "" {
+			pattern := "%" + keyword + "%"
+			query = query.Where(`
+				lower(e.merchant) like ? or
+				lower(e.note) like ? or
+				lower(e.type) like ? or
+				lower(e.currency) like ? or
+				to_char(e.occurred_on, 'YYYY-MM-DD') like ? or
+				cast(e.amount as text) like ? or
+				exists (
+					select 1
+					from public.expense_accounts a
+					where a.id = e.account_id and a.group_id = e.group_id and a.deleted_at is null and lower(a.name) like ?
+				) or
+				exists (
+					select 1
+					from public.expense_categories c
+					where c.id = e.category_id and c.group_id = e.group_id and c.deleted_at is null and lower(c.name) like ?
+				)
+			`, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
+		}
+
+		limit := req.Limit
+		if limit > 0 {
+			if limit > 1000 {
+				limit = 1000
+			}
+			query = query.Limit(limit)
+		}
+	}
+
+	err := query.Order("e.occurred_on desc, e.updated_at desc").Scan(&records).Error
+	return records, err
+}
+
+func (s *ExpenseService) CreateAdjustment(ctx context.Context, groupID string, req *request.CreateAdjustmentRequest) (*dao.ExpenseCategoryAdjustment, error) {
+	if strings.TrimSpace(req.CategoryID) == "" {
+		return nil, fmt.Errorf("categoryId is required")
+	}
+
+	occurredOn, err := normalizeDate(req.OccurredOn)
+	if err != nil {
+		return nil, err
+	}
+
+	id, err := uuid.GenerateUUID()
+	if err != nil {
+		return nil, fmt.Errorf("generate adjustment id: %w", err)
+	}
+
+	now := time.Now().UTC()
+	adjustment := &dao.ExpenseCategoryAdjustment{
+		ID:         id,
+		GroupID:    groupID,
+		CategoryID: strings.TrimSpace(req.CategoryID),
+		Amount:     req.Amount,
+		OccurredOn: occurredOn,
+		Note:       strings.TrimSpace(req.Note),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	if err := s.DB.WithContext(ctx).Table((dao.ExpenseCategoryAdjustment{}).TableName()).Create(adjustment).Error; err != nil {
+		return nil, err
+	}
+
+	return adjustment, nil
+}
+
+func (s *ExpenseService) ListAdjustments(ctx context.Context, groupID string) ([]dao.ExpenseCategoryAdjustment, error) {
+	records := make([]dao.ExpenseCategoryAdjustment, 0)
+	err := s.DB.WithContext(ctx).Raw(`
+		select
+			id::text as id,
+			group_id::text as group_id,
+			category_id::text as category_id,
+			amount,
+			to_char(occurred_on, 'YYYY-MM-DD') as occurred_on,
+			note,
+			created_at,
+			updated_at,
+			deleted_at
+		from public.expense_category_adjustments
+		where group_id = ?::uuid and deleted_at is null
+		order by occurred_on desc, updated_at desc
+	`, groupID).Scan(&records).Error
+	return records, err
+}
+
+func normalizeDate(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return time.Now().UTC().Format("2006-01-02"), nil
+	}
+
+	parsed, err := time.Parse("2006-01-02", trimmed)
+	if err != nil {
+		return "", fmt.Errorf("occurredOn must be YYYY-MM-DD")
+	}
+	return parsed.Format("2006-01-02"), nil
+}
+
+func normalizeCurrencyCode(value string) (string, error) {
+	code := strings.ToUpper(strings.TrimSpace(value))
+	if code == "" {
+		return "USD", nil
+	}
+	if len(code) != 3 {
+		return "", fmt.Errorf("currency must be a 3-letter code")
+	}
+	for _, char := range code {
+		if char < 'A' || char > 'Z' {
+			return "", fmt.Errorf("currency must be a 3-letter code")
+		}
+	}
+	return code, nil
+}
+
+func normalizeIcon(value string, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	return trimmed
+}
+
+func (s *ExpenseService) findCategoryType(ctx context.Context, groupID string, categoryID string) (string, error) {
+	var category dao.ExpenseCategory
+	if err := s.DB.WithContext(ctx).Raw(`
+		select
+			id::text as id,
+			name,
+			type
+		from public.expense_categories
+		where id = ?::uuid and group_id = ?::uuid and deleted_at is null
+		limit 1
+	`, categoryID, groupID).Scan(&category).Error; err != nil {
+		return "", err
+	}
+
+	if strings.TrimSpace(category.ID) == "" {
+		return "", fmt.Errorf("category not found")
+	}
+
+	return normalizeCategoryType(category.Type, category.Name), nil
+}
+
+func defaultAccountIcon(accountType string) string {
+	switch strings.ToLower(strings.TrimSpace(accountType)) {
+	case "cash":
+		return "💵"
+	case "card":
+		return "💳"
+	case "wallet":
+		return "👛"
+	case "bank":
+		fallthrough
+	default:
+		return "🏦"
+	}
+}
+
+func defaultCategoryIcon(categoryName string) string {
+	normalized := strings.ToLower(strings.TrimSpace(categoryName))
+	switch {
+	case strings.Contains(normalized, "grocer"), strings.Contains(normalized, "food"), strings.Contains(normalized, "eat"):
+		return "🍽️"
+	case strings.Contains(normalized, "transport"), strings.Contains(normalized, "fuel"), strings.Contains(normalized, "car"):
+		return "🚗"
+	case strings.Contains(normalized, "home"), strings.Contains(normalized, "rent"):
+		return "🏠"
+	case strings.Contains(normalized, "health"), strings.Contains(normalized, "medic"):
+		return "🩺"
+	case strings.Contains(normalized, "income"), strings.Contains(normalized, "salary"):
+		return "💼"
+	default:
+		return "🏷️"
+	}
+}
+
+func normalizeCategoryType(value string, nameFallback string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "income":
+		return "income"
+	case "expense":
+		return "expense"
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(nameFallback))
+	if strings.Contains(normalized, "income") || strings.Contains(normalized, "salary") || strings.Contains(normalized, "payroll") {
+		return "income"
+	}
+	return "expense"
+}

@@ -1,0 +1,494 @@
+basePath: /
+definitions:
+  dao.Profile:
+    properties:
+      avatarUrl:
+        type: string
+      fullName:
+        type: string
+      id:
+        type: string
+      updatedAt:
+        type: string
+      username:
+        type: string
+      website:
+        type: string
+    type: object
+  model.Post:
+    properties:
+      category:
+        type: string
+      content:
+        type: string
+      id:
+        type: string
+      images:
+        items:
+          type: string
+        type: array
+      loadableComments:
+        type: boolean
+      medias:
+        items:
+          type: string
+        type: array
+      nsfw:
+        type: boolean
+      poster:
+        type: string
+      score:
+        type: integer
+      socmed:
+        type: string
+      timestamp:
+        type: string
+      title:
+        type: string
+      url:
+        type: string
+    type: object
+  model.SavedCategories:
+    properties:
+      application:
+        type: string
+      category:
+        type: string
+      createdAt:
+        type: string
+      requestedBy:
+        type: string
+      updatedAt:
+        type: string
+      userId:
+        type: string
+    type: object
+  model.SubPost:
+    properties:
+      category:
+        type: string
+      children:
+        items:
+          $ref: '#/definitions/model.SubPost'
+        type: array
+      content:
+        type: string
+      depth:
+        type: integer
+      id:
+        type: string
+      images:
+        items:
+          type: string
+        type: array
+      loadableComments:
+        type: boolean
+      originalPostId:
+        type: string
+      parentId:
+        type: string
+      poster:
+        type: string
+      score:
+        type: integer
+      socmed:
+        type: string
+      timestamp:
+        type: string
+      url:
+        type: string
+    type: object
+  request.AuthRequest:
+    properties:
+      password:
+        type: string
+      token:
+        type: string
+      username:
+        type: string
+    type: object
+  response.AuthResponse:
+    properties:
+      expiry:
+        type: integer
+      fullName:
+        type: string
+      redditUrlLogin:
+        type: string
+      resultInfo:
+        $ref: '#/definitions/response.BaseResponse'
+      token:
+        type: string
+      userId:
+        type: string
+      username:
+        type: string
+    type: object
+  response.BaseResponse:
+    properties:
+      error:
+        type: string
+      requestId:
+        type: string
+      success:
+        type: boolean
+    type: object
+  response.PostResponse:
+    properties:
+      post:
+        $ref: '#/definitions/model.Post'
+      posts:
+        items:
+          $ref: '#/definitions/model.Post'
+        type: array
+      resultInfo:
+        $ref: '#/definitions/response.BaseResponse'
+      subPosts:
+        items:
+          $ref: '#/definitions/model.SubPost'
+        type: array
+    type: object
+  response.UserResponse:
+    properties:
+      post:
+        $ref: '#/definitions/model.Post'
+      profile:
+        $ref: '#/definitions/dao.Profile'
+      resultInfo:
+        $ref: '#/definitions/response.BaseResponse'
+      savedCategories:
+        items:
+          $ref: '#/definitions/model.SavedCategories'
+        type: array
+      savedPosts:
+        items:
+          $ref: '#/definitions/model.Post'
+        type: array
+      subPosts:
+        items:
+          $ref: '#/definitions/model.SubPost'
+        type: array
+    type: object
+host: api.onesocial.kube.lucasgrey.dev
+info:
+  contact:
+    email: me@jonathanhosea.dev
+    name: John Nate
+    url: https://jonathanhosea.dev
+  description: Aggregator for all social media
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: https://onesocial.io
+  title: One Social
+  version: "1.0"
+paths:
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: login and retrieve JWT token
+      parameters:
+      - description: Auth Request
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/request.AuthRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+      summary: Login user
+      tags:
+      - accounts
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: register new user and retrieve JWT token
+      parameters:
+      - description: Auth Request
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/request.AuthRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+      summary: Register new user
+      tags:
+      - accounts
+  /auth/user/{userId}:
+    post:
+      consumes:
+      - application/json
+      description: See current user of jwt
+      parameters:
+      - description: Auth Request
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/request.AuthRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+      summary: User get user info
+      tags:
+      - accounts
+  /callback/reddit:
+    get:
+      consumes:
+      - application/json
+      description: callback to retrieve reddit auth token
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+      summary: RedditCallback
+      tags:
+      - reddit
+  /reddit/auth:
+    get:
+      consumes:
+      - application/json
+      description: callback to retrieve reddit auth token
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.AuthResponse'
+      summary: RedditGenerateAuth
+      tags:
+      - reddit
+  /v1/home:
+    get:
+      consumes:
+      - application/json
+      description: Loading home page posts from multiple
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.PostResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.PostResponse'
+      summary: HomeV1 API
+      tags:
+      - accounts
+  /v1/post/{social}/{postId}:
+    get:
+      consumes:
+      - application/json
+      description: Load single post
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.PostResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.PostResponse'
+      summary: Look at single post
+      tags:
+      - socials
+  /v1/top/category/{social}/{category}:
+    get:
+      consumes:
+      - application/json
+      description: Load category top
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.PostResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.PostResponse'
+      summary: CategoryTopV1 top API
+      tags:
+      - socials
+  /v1/top/subreddit/{subreddit}:
+    get:
+      consumes:
+      - application/json
+      description: Load subreddit top
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.PostResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.PostResponse'
+      summary: SubredditV1 top API
+      tags:
+      - socials
+  /v1/user/categories:
+    get:
+      consumes:
+      - application/json
+      description: Loading user saved categories from multiple socials
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+      summary: UserCategoriesV1 API
+      tags:
+      - accounts
+  /v1/user/category:
+    put:
+      consumes:
+      - application/json
+      description: User index category
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+      summary: UserIndexCategoryV1 API
+      tags:
+      - accounts
+  /v1/user/profile:
+    get:
+      consumes:
+      - application/json
+      description: Loading user profile
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+      summary: UserProfileV1 API
+      tags:
+      - accounts
+  /v1/user/saved:
+    get:
+      consumes:
+      - application/json
+      description: Loading user saved posts from multiple socials
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+      summary: UserSavedV1 API
+      tags:
+      - accounts
+    post:
+      consumes:
+      - application/json
+      description: Sync user saved post from social
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+      summary: UserSavedSyncV1 API
+      tags:
+      - accounts
+  /v1/user/saved/post:
+    get:
+      consumes:
+      - application/json
+      description: Loading single user saved post
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.UserResponse'
+      summary: UserSavedPostV1 API
+      tags:
+      - accounts
+securityDefinitions:
+  Bearer Token:
+    type: basic
+swagger: "2.0"

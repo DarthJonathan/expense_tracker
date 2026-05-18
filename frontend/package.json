@@ -1,0 +1,27 @@
+{
+	"name": "expense-tracker",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"scripts": {
+		"dev": "vite --host 0.0.0.0",
+		"build": "vite build",
+		"preview": "vite preview --host 0.0.0.0",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+	},
+	"dependencies": {
+		"@vite-pwa/sveltekit": "^1.0.1",
+		"bits-ui": "^2.18.1",
+		"lucide-svelte": "^0.468.0"
+	},
+	"devDependencies": {
+		"@sveltejs/adapter-node": "^5.5.4",
+		"@sveltejs/kit": "^2.43.5",
+		"@sveltejs/vite-plugin-svelte": "^7.0.0",
+		"@types/node": "^24.10.1",
+		"svelte": "^5.43.3",
+		"svelte-check": "^4.3.4",
+		"typescript": "^5.9.3",
+		"vite": "^8.0.0"
+	}
+}
