@@ -2,8 +2,11 @@ package main
 
 import (
 	_ "embed"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	_ "expense-tracker/backend/docs"
@@ -43,7 +46,8 @@ func RunServer() error {
 		log.WithError(err).Fatal("invalid database schema")
 	}
 
-	db := initDatabase(config.Cfg.Database.URL)
+	dbURL := resolveDatabaseURL()
+	db := initDatabase(dbURL)
 	if err := database.Migrate(db); err != nil {
 		log.WithError(err).Fatal("failed to run database migrations")
 	}
@@ -117,7 +121,7 @@ func initRouter(db *gorm.DB) *mux.Router {
 
 func initDatabase(databaseURL string) *gorm.DB {
 	if databaseURL == "" {
-		log.Fatal("DATABASE_URL is required")
+		log.Fatal("DATABASE_URL is required, or set DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME")
 	}
 
 	db, err := gorm.Open(postgres.New(postgres.Config{
@@ -142,6 +146,104 @@ func initDatabase(databaseURL string) *gorm.DB {
 
 	log.Info("database connected")
 	return db
+}
+
+func resolveDatabaseURL() string {
+	if directURL := strings.TrimSpace(config.Cfg.Database.URL); directURL != "" {
+		return directURL
+	}
+
+	host := strings.TrimSpace(firstNonEmpty(
+		os.Getenv("DB_HOST"),
+		os.Getenv("DATABASE_HOST"),
+		os.Getenv("POSTGRES_HOST"),
+		os.Getenv("PGHOST"),
+	))
+	port := strings.TrimSpace(firstNonEmpty(
+		os.Getenv("DB_PORT"),
+		os.Getenv("DATABASE_PORT"),
+		os.Getenv("POSTGRES_PORT"),
+		os.Getenv("PGPORT"),
+	))
+	user := strings.TrimSpace(firstNonEmpty(
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_USERNAME"),
+		os.Getenv("DATABASE_USER"),
+		os.Getenv("DATABASE_USERNAME"),
+		os.Getenv("POSTGRES_USER"),
+		os.Getenv("PGUSER"),
+	))
+	password := firstNonEmpty(
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DATABASE_PASSWORD"),
+		os.Getenv("POSTGRES_PASSWORD"),
+		os.Getenv("PGPASSWORD"),
+	)
+	name := strings.TrimSpace(firstNonEmpty(
+		os.Getenv("DB_NAME"),
+		os.Getenv("DB_DATABASE"),
+		os.Getenv("DATABASE_NAME"),
+		os.Getenv("DATABASE_DB"),
+		os.Getenv("POSTGRES_DB"),
+		os.Getenv("PGDATABASE"),
+	))
+	sslMode := strings.TrimSpace(firstNonEmpty(os.Getenv("DB_SSLMODE"), "disable"))
+
+	if host == "" || user == "" || name == "" {
+		return ""
+	}
+	if port == "" {
+		port = "5432"
+	}
+
+	dsn := &url.URL{
+		Scheme: "postgres",
+		Host:   net.JoinHostPort(host, port),
+		Path:   "/" + name,
+	}
+	if password != "" {
+		dsn.User = url.UserPassword(user, password)
+	} else {
+		dsn.User = url.User(user)
+	}
+
+	query := dsn.Query()
+	query.Set("sslmode", sslMode)
+	if schema := strings.TrimSpace(config.Cfg.Database.Schema); schema != "" {
+		query.Set("search_path", schema)
+	}
+
+	if extraOptions := strings.TrimSpace(os.Getenv("DB_OPTIONS")); extraOptions != "" {
+		// Support comma-separated key=value pairs in DB_OPTIONS.
+		parts := strings.Split(extraOptions, ",")
+		for _, part := range parts {
+			option := strings.TrimSpace(part)
+			if option == "" {
+				continue
+			}
+			kv := strings.SplitN(option, "=", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			key := strings.TrimSpace(kv[0])
+			value := strings.TrimSpace(kv[1])
+			if key != "" && value != "" {
+				query.Set(key, value)
+			}
+		}
+	}
+
+	dsn.RawQuery = query.Encode()
+	return dsn.String()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func accessLogMiddleware(next http.Handler) http.Handler {

@@ -1,5 +1,6 @@
 services:
   postgres:
+    profiles: ["local-db"]
     image: postgres:16-alpine
     container_name: spendit-postgres
     restart: unless-stopped
@@ -11,6 +12,8 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - spendit-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-expense_tracker}"]
       interval: 5s
@@ -26,15 +29,21 @@ services:
     environment:
       PORT: ${BACKEND_PORT:-8080}
       LOG_LEVEL: ${BACKEND_LOG_LEVEL:-info}
-      DATABASE_URL: ${BACKEND_DATABASE_URL:-postgres://postgres:postgres@postgres:5432/expense_tracker?sslmode=disable}
+      DATABASE_URL: ${BACKEND_DATABASE_URL:-}
+      DB_HOST: ${BACKEND_DB_HOST:-spendit-postgres}
+      DB_PORT: ${BACKEND_DB_PORT:-5432}
+      DB_USER: ${BACKEND_DB_USER:-postgres}
+      DB_PASSWORD: ${BACKEND_DB_PASSWORD:-postgres}
+      DB_NAME: ${BACKEND_DB_NAME:-expense_tracker}
+      DB_SSLMODE: ${BACKEND_DB_SSLMODE:-disable}
+      DB_SCHEMA: ${BACKEND_DB_SCHEMA:-spendit}
       CORS_ALLOW_ORIGIN: ${BACKEND_CORS_ALLOW_ORIGIN:-http://localhost:3000}
       JWT_SECRET: ${BACKEND_JWT_SECRET:-change-me-in-production}
       JWT_TOKEN_EXPIRY_HOURS: ${BACKEND_JWT_TOKEN_EXPIRY_HOURS:-168}
     ports:
       - "${BACKEND_PORT:-8080}:${BACKEND_PORT:-8080}"
-    depends_on:
-      postgres:
-        condition: service_healthy
+    networks:
+      - spendit-net
 
   frontend:
     build:
@@ -50,6 +59,13 @@ services:
       - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       - backend
+    networks:
+      - spendit-net
 
 volumes:
   pgdata:
+
+networks:
+  spendit-net:
+    name: ${DOCKER_SHARED_NETWORK:-spendit-net}
+    external: true
