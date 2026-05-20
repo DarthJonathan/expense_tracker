@@ -11,6 +11,7 @@ import (
 	"expense-tracker/backend/config"
 	"expense-tracker/backend/constants"
 	"expense-tracker/backend/controllers"
+	"expense-tracker/backend/dao"
 	"expense-tracker/backend/database"
 	"expense-tracker/backend/middleware"
 	"expense-tracker/backend/service"
@@ -37,6 +38,10 @@ func RunServer() error {
 
 	log.SetHandler(textHandler.New(os.Stdout))
 	log.SetLevelFromString(config.Cfg.Server.LoggingLevel)
+
+	if err := dao.SetSchema(config.Cfg.Database.Schema); err != nil {
+		log.WithError(err).Fatal("invalid database schema")
+	}
 
 	db := initDatabase(config.Cfg.Database.URL)
 	if err := database.Migrate(db); err != nil {

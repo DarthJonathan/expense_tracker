@@ -17,6 +17,7 @@ The frontend no longer uses Supabase client SDK directly. It syncs through the b
 ## Run with Docker (recommended)
 
 ```bash
+cp .env.example .env
 docker compose up --build
 ```
 

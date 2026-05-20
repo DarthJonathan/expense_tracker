@@ -1,6 +1,7 @@
 export type AccountType = 'cash' | 'bank' | 'card' | 'wallet';
 export type EntryType = 'expense' | 'income';
 export type CategoryType = EntryType;
+export type CategoryScope = 'household' | 'user';
 export type PeriodGrain = 'day' | 'week' | 'month';
 
 export interface SyncableRecord {
@@ -28,6 +29,8 @@ export interface Account extends SyncableRecord {
 export interface Category extends SyncableRecord {
 	name: string;
 	type: CategoryType;
+	scope: CategoryScope;
+	ownerUserId?: string | null;
 	color: string;
 	icon: string;
 	monthlyTarget: number;

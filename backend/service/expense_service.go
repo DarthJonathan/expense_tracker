@@ -28,7 +28,7 @@ func (s *ExpenseService) ResolveOrCreateUserGroup(ctx context.Context, userID st
 	}
 
 	group := &dao.ExpenseGroup{}
-	err := s.DB.WithContext(ctx).Raw(`
+	err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			name,
@@ -37,11 +37,11 @@ func (s *ExpenseService) ResolveOrCreateUserGroup(ctx context.Context, userID st
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_groups
+		from %s
 		where created_by = ?::uuid and deleted_at is null
 		order by updated_at desc
 		limit 1
-	`, owner).Scan(group).Error
+	`, dao.QualifiedTable("expense_groups")), owner).Scan(group).Error
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,7 @@ func (s *ExpenseService) CreateAccount(ctx context.Context, groupID string, req 
 
 func (s *ExpenseService) ListAccounts(ctx context.Context, groupID string) ([]dao.ExpenseAccount, error) {
 	records := make([]dao.ExpenseAccount, 0)
-	err := s.DB.WithContext(ctx).Raw(`
+	err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -152,14 +152,14 @@ func (s *ExpenseService) ListAccounts(ctx context.Context, groupID string) ([]da
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_accounts
+		from %s
 		where group_id = ?::uuid and deleted_at is null
 		order by updated_at desc
-	`, groupID).Scan(&records).Error
+	`, dao.QualifiedTable("expense_accounts")), groupID).Scan(&records).Error
 	return records, err
 }
 
-func (s *ExpenseService) CreateCategory(ctx context.Context, groupID string, req *request.CreateCategoryRequest) (*dao.ExpenseCategory, error) {
+func (s *ExpenseService) CreateCategory(ctx context.Context, groupID string, authUserID string, req *request.CreateCategoryRequest) (*dao.ExpenseCategory, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, fmt.Errorf("name is required")
@@ -176,13 +176,24 @@ func (s *ExpenseService) CreateCategory(ctx context.Context, groupID string, req
 		color = "#e7d24e"
 	}
 	categoryType := normalizeCategoryType(req.Type, name)
+	categoryScope := normalizeCategoryScope(req.Scope)
 	icon := normalizeIcon(req.Icon, defaultCategoryIcon(name))
+	var ownerUserID *string
+	if categoryScope == "user" {
+		trimmedUserID := strings.TrimSpace(authUserID)
+		if trimmedUserID == "" {
+			return nil, fmt.Errorf("authenticated user is required for user-level category")
+		}
+		ownerUserID = &trimmedUserID
+	}
 
 	category := &dao.ExpenseCategory{
 		ID:            id,
 		GroupID:       groupID,
 		Name:          name,
 		Type:          categoryType,
+		Scope:         categoryScope,
+		OwnerUserID:   ownerUserID,
 		Color:         color,
 		Icon:          icon,
 		MonthlyTarget: req.MonthlyTarget,
@@ -197,24 +208,34 @@ func (s *ExpenseService) CreateCategory(ctx context.Context, groupID string, req
 	return category, nil
 }
 
-func (s *ExpenseService) ListCategories(ctx context.Context, groupID string) ([]dao.ExpenseCategory, error) {
+func (s *ExpenseService) ListCategories(ctx context.Context, groupID string, authUserID string) ([]dao.ExpenseCategory, error) {
 	records := make([]dao.ExpenseCategory, 0)
-	err := s.DB.WithContext(ctx).Raw(`
+	authUserID = strings.TrimSpace(authUserID)
+	accessClause := "(scope = 'household')"
+	args := []any{groupID}
+	if authUserID != "" {
+		accessClause = "(scope = 'household' or (scope = 'user' and owner_user_id = ?::uuid))"
+		args = append(args, authUserID)
+	}
+
+	err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
 			name,
 			type,
+			scope,
+			owner_user_id::text as owner_user_id,
 			color,
 			icon,
 			monthly_target,
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_categories
-		where group_id = ?::uuid and deleted_at is null
+		from %s
+		where group_id = ?::uuid and deleted_at is null and %s
 		order by updated_at desc
-	`, groupID).Scan(&records).Error
+	`, dao.QualifiedTable("expense_categories"), accessClause), args...).Scan(&records).Error
 	return records, err
 }
 
@@ -237,12 +258,12 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 		return nil, fmt.Errorf("type must be expense or income")
 	}
 
-	categoryType, err := s.findCategoryType(ctx, groupID, strings.TrimSpace(req.CategoryID))
+	categoryMeta, err := s.findCategoryForUser(ctx, groupID, strings.TrimSpace(req.CategoryID), createdByUserID)
 	if err != nil {
 		return nil, err
 	}
-	if categoryType != "" && categoryType != entryType {
-		return nil, fmt.Errorf("category type mismatch: category is %s but entry is %s", categoryType, entryType)
+	if categoryMeta.Type != "" && categoryMeta.Type != entryType {
+		return nil, fmt.Errorf("category type mismatch: category is %s but entry is %s", categoryMeta.Type, entryType)
 	}
 
 	merchant := strings.TrimSpace(req.Merchant)
@@ -302,7 +323,7 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *request.ListExpensesRequest) ([]dao.ExpenseEntry, error) {
 	records := make([]dao.ExpenseEntry, 0)
 
-	query := s.DB.WithContext(ctx).Table("public.expense_entries as e").Select(`
+	query := s.DB.WithContext(ctx).Table(fmt.Sprintf("%s as e", dao.QualifiedTable("expense_entries"))).Select(`
 		e.id::text as id,
 		e.group_id::text as group_id,
 		e.account_id::text as account_id,
@@ -336,7 +357,7 @@ func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *
 		keyword := strings.ToLower(strings.TrimSpace(req.Query))
 		if keyword != "" {
 			pattern := "%" + keyword + "%"
-			query = query.Where(`
+			query = query.Where(fmt.Sprintf(`
 				lower(e.merchant) like ? or
 				lower(e.note) like ? or
 				lower(e.type) like ? or
@@ -345,15 +366,18 @@ func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *
 				cast(e.amount as text) like ? or
 				exists (
 					select 1
-					from public.expense_accounts a
+					from %s a
 					where a.id = e.account_id and a.group_id = e.group_id and a.deleted_at is null and lower(a.name) like ?
 				) or
 				exists (
 					select 1
-					from public.expense_categories c
+					from %s c
 					where c.id = e.category_id and c.group_id = e.group_id and c.deleted_at is null and lower(c.name) like ?
 				)
-			`, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
+			`,
+				dao.QualifiedTable("expense_accounts"),
+				dao.QualifiedTable("expense_categories")),
+				pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
 		}
 
 		limit := req.Limit
@@ -369,9 +393,12 @@ func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *
 	return records, err
 }
 
-func (s *ExpenseService) CreateAdjustment(ctx context.Context, groupID string, req *request.CreateAdjustmentRequest) (*dao.ExpenseCategoryAdjustment, error) {
+func (s *ExpenseService) CreateAdjustment(ctx context.Context, groupID string, authUserID string, req *request.CreateAdjustmentRequest) (*dao.ExpenseCategoryAdjustment, error) {
 	if strings.TrimSpace(req.CategoryID) == "" {
 		return nil, fmt.Errorf("categoryId is required")
+	}
+	if _, err := s.findCategoryForUser(ctx, groupID, strings.TrimSpace(req.CategoryID), authUserID); err != nil {
+		return nil, err
 	}
 
 	occurredOn, err := normalizeDate(req.OccurredOn)
@@ -405,7 +432,7 @@ func (s *ExpenseService) CreateAdjustment(ctx context.Context, groupID string, r
 
 func (s *ExpenseService) ListAdjustments(ctx context.Context, groupID string) ([]dao.ExpenseCategoryAdjustment, error) {
 	records := make([]dao.ExpenseCategoryAdjustment, 0)
-	err := s.DB.WithContext(ctx).Raw(`
+	err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -416,10 +443,10 @@ func (s *ExpenseService) ListAdjustments(ctx context.Context, groupID string) ([
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_category_adjustments
+		from %s
 		where group_id = ?::uuid and deleted_at is null
 		order by occurred_on desc, updated_at desc
-	`, groupID).Scan(&records).Error
+	`, dao.QualifiedTable("expense_category_adjustments")), groupID).Scan(&records).Error
 	return records, err
 }
 
@@ -460,25 +487,50 @@ func normalizeIcon(value string, fallback string) string {
 	return trimmed
 }
 
-func (s *ExpenseService) findCategoryType(ctx context.Context, groupID string, categoryID string) (string, error) {
-	var category dao.ExpenseCategory
-	if err := s.DB.WithContext(ctx).Raw(`
+type categoryMeta struct {
+	ID          string
+	Name        string
+	Type        string
+	Scope       string
+	OwnerUserID *string
+}
+
+func (s *ExpenseService) findCategoryForUser(ctx context.Context, groupID string, categoryID string, authUserID string) (*categoryMeta, error) {
+	var category categoryMeta
+	if err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			name,
-			type
-		from public.expense_categories
+			type,
+			scope,
+			owner_user_id::text as owner_user_id
+		from %s
 		where id = ?::uuid and group_id = ?::uuid and deleted_at is null
 		limit 1
-	`, categoryID, groupID).Scan(&category).Error; err != nil {
-		return "", err
+	`, dao.QualifiedTable("expense_categories")), categoryID, groupID).Scan(&category).Error; err != nil {
+		return nil, err
 	}
 
 	if strings.TrimSpace(category.ID) == "" {
-		return "", fmt.Errorf("category not found")
+		return nil, fmt.Errorf("category not found")
 	}
 
-	return normalizeCategoryType(category.Type, category.Name), nil
+	category.Scope = normalizeCategoryScope(category.Scope)
+	category.Type = normalizeCategoryType(category.Type, category.Name)
+	if category.Scope == "user" {
+		trimmedUserID := strings.TrimSpace(authUserID)
+		if trimmedUserID == "" {
+			return nil, fmt.Errorf("unauthorized category access")
+		}
+		if category.OwnerUserID == nil || strings.TrimSpace(*category.OwnerUserID) == "" {
+			return nil, fmt.Errorf("invalid user category owner")
+		}
+		if strings.TrimSpace(*category.OwnerUserID) != trimmedUserID {
+			return nil, fmt.Errorf("category does not belong to current user")
+		}
+	}
+
+	return &category, nil
 }
 
 func defaultAccountIcon(accountType string) string {
@@ -527,4 +579,13 @@ func normalizeCategoryType(value string, nameFallback string) string {
 		return "income"
 	}
 	return "expense"
+}
+
+func normalizeCategoryScope(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "user":
+		return "user"
+	default:
+		return "household"
+	}
 }

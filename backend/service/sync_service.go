@@ -24,10 +24,14 @@ func NewSyncService(db *gorm.DB) *SyncService {
 	return &SyncService{DB: db}
 }
 
-func (s *SyncService) Sync(ctx context.Context, req *request.SyncRequest) (*response.SyncData, error) {
+func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.SyncRequest) (*response.SyncData, error) {
 	groupID := req.Settings.ActiveGroupID
 	if groupID == "" {
 		return nil, errors.New("settings.activeGroupId is required")
+	}
+	authUserID = strings.TrimSpace(authUserID)
+	if authUserID == "" {
+		return nil, errors.New("authenticated user is required")
 	}
 
 	now := time.Now().UTC()
@@ -45,7 +49,7 @@ func (s *SyncService) Sync(ctx context.Context, req *request.SyncRequest) (*resp
 			}
 		}
 
-		for _, category := range filterCategoriesByGroup(req.Categories, groupID) {
+		for _, category := range filterCategoriesByGroup(req.Categories, groupID, authUserID) {
 			if err := upsertCategory(tx, category); err != nil {
 				return fmt.Errorf("upsert category %s: %w", category.ID, err)
 			}
@@ -83,7 +87,7 @@ func (s *SyncService) Sync(ctx context.Context, req *request.SyncRequest) (*resp
 			return fmt.Errorf("pull accounts: %w", err)
 		}
 
-		categories, err := pullCategories(tx, groupID)
+		categories, err := pullCategories(tx, groupID, authUserID)
 		if err != nil {
 			return fmt.Errorf("pull categories: %w", err)
 		}
@@ -160,7 +164,7 @@ func upsertGroup(tx *gorm.DB, group dao.ExpenseGroup) error {
 			DoUpdates: clause.Assignments(map[string]any{
 				"name":        row["name"],
 				"invite_code": row["invite_code"],
-				"created_by":  gorm.Expr("coalesce(public.expense_groups.created_by, excluded.created_by)"),
+				"created_by":  gorm.Expr(fmt.Sprintf("coalesce(%s.created_by, excluded.created_by)", dao.QualifiedTable("expense_groups"))),
 				"updated_at":  row["updated_at"],
 				"deleted_at":  row["deleted_at"],
 			}),
@@ -202,11 +206,18 @@ func upsertAccount(tx *gorm.DB, account dao.ExpenseAccount) error {
 
 func upsertCategory(tx *gorm.DB, category dao.ExpenseCategory) error {
 	now := time.Now().UTC()
+	scope := normalizeCategoryScope(category.Scope)
+	var ownerUserID any
+	if scope == "user" {
+		ownerUserID = stringOrNil(category.OwnerUserID)
+	}
 	row := map[string]any{
 		"id":             category.ID,
 		"group_id":       category.GroupID,
 		"name":           category.Name,
 		"type":           normalizeCategoryType(category.Type, category.Name),
+		"scope":          scope,
+		"owner_user_id":  ownerUserID,
 		"color":          category.Color,
 		"icon":           normalizeIcon(category.Icon, defaultCategoryIcon(category.Name)),
 		"monthly_target": category.MonthlyTarget,
@@ -222,6 +233,8 @@ func upsertCategory(tx *gorm.DB, category dao.ExpenseCategory) error {
 				"group_id":       row["group_id"],
 				"name":           row["name"],
 				"type":           row["type"],
+				"scope":          row["scope"],
+				"owner_user_id":  row["owner_user_id"],
 				"color":          row["color"],
 				"icon":           row["icon"],
 				"monthly_target": row["monthly_target"],
@@ -264,7 +277,7 @@ func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) error {
 				"occurred_on": row["occurred_on"],
 				"merchant":    row["merchant"],
 				"note":        row["note"],
-				"created_by":  gorm.Expr("coalesce(public.expense_entries.created_by, excluded.created_by)"),
+				"created_by":  gorm.Expr(fmt.Sprintf("coalesce(%s.created_by, excluded.created_by)", dao.QualifiedTable("expense_entries"))),
 				"updated_at":  row["updated_at"],
 				"deleted_at":  row["deleted_at"],
 			}),
@@ -345,8 +358,8 @@ func upsertMerchant(tx *gorm.DB, merchant dao.ExpenseMerchant) error {
 			Columns: []clause.Column{{Name: "group_id"}, {Name: "normalized_name"}},
 			DoUpdates: clause.Assignments(map[string]any{
 				"name":         row["name"],
-				"usage_count":  gorm.Expr("greatest(public.expense_merchants.usage_count, excluded.usage_count)"),
-				"last_used_at": gorm.Expr("coalesce(greatest(public.expense_merchants.last_used_at, excluded.last_used_at), public.expense_merchants.last_used_at, excluded.last_used_at)"),
+				"usage_count":  gorm.Expr(fmt.Sprintf("greatest(%s.usage_count, excluded.usage_count)", dao.QualifiedTable("expense_merchants"))),
+				"last_used_at": gorm.Expr(fmt.Sprintf("coalesce(greatest(%s.last_used_at, excluded.last_used_at), %s.last_used_at, excluded.last_used_at)", dao.QualifiedTable("expense_merchants"), dao.QualifiedTable("expense_merchants"))),
 				"updated_at":   row["updated_at"],
 				"deleted_at":   row["deleted_at"],
 			}),
@@ -356,7 +369,7 @@ func upsertMerchant(tx *gorm.DB, merchant dao.ExpenseMerchant) error {
 
 func pullGroups(tx *gorm.DB, groupID string) ([]dao.ExpenseGroup, error) {
 	var rows []dao.ExpenseGroup
-	if err := tx.Raw(`
+	if err := tx.Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			name,
@@ -365,9 +378,9 @@ func pullGroups(tx *gorm.DB, groupID string) ([]dao.ExpenseGroup, error) {
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_groups
+		from %s
 		where id = ?::uuid
-	`, groupID).Scan(&rows).Error; err != nil {
+	`, dao.QualifiedTable("expense_groups")), groupID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -375,7 +388,7 @@ func pullGroups(tx *gorm.DB, groupID string) ([]dao.ExpenseGroup, error) {
 
 func pullAccounts(tx *gorm.DB, groupID string) ([]dao.ExpenseAccount, error) {
 	var rows []dao.ExpenseAccount
-	if err := tx.Raw(`
+	if err := tx.Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -387,33 +400,42 @@ func pullAccounts(tx *gorm.DB, groupID string) ([]dao.ExpenseAccount, error) {
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_accounts
+		from %s
 		where group_id = ?::uuid
 		order by updated_at desc
-	`, groupID).Scan(&rows).Error; err != nil {
+	`, dao.QualifiedTable("expense_accounts")), groupID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-func pullCategories(tx *gorm.DB, groupID string) ([]dao.ExpenseCategory, error) {
+func pullCategories(tx *gorm.DB, groupID string, authUserID string) ([]dao.ExpenseCategory, error) {
 	var rows []dao.ExpenseCategory
-	if err := tx.Raw(`
+	authUserID = strings.TrimSpace(authUserID)
+	accessClause := "(scope = 'household')"
+	args := []any{groupID}
+	if authUserID != "" {
+		accessClause = "(scope = 'household' or (scope = 'user' and owner_user_id = ?::uuid))"
+		args = append(args, authUserID)
+	}
+	if err := tx.Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
 			name,
 			type,
+			scope,
+			owner_user_id::text as owner_user_id,
 			color,
 			icon,
 			monthly_target,
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_categories
-		where group_id = ?::uuid
+		from %s
+		where group_id = ?::uuid and %s
 		order by updated_at desc
-	`, groupID).Scan(&rows).Error; err != nil {
+	`, dao.QualifiedTable("expense_categories"), accessClause), args...).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -421,7 +443,7 @@ func pullCategories(tx *gorm.DB, groupID string) ([]dao.ExpenseCategory, error) 
 
 func pullEntries(tx *gorm.DB, groupID string) ([]dao.ExpenseEntry, error) {
 	var rows []dao.ExpenseEntry
-	if err := tx.Raw(`
+	if err := tx.Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -437,10 +459,10 @@ func pullEntries(tx *gorm.DB, groupID string) ([]dao.ExpenseEntry, error) {
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_entries
+		from %s
 		where group_id = ?::uuid
 		order by occurred_on desc, updated_at desc
-	`, groupID).Scan(&rows).Error; err != nil {
+	`, dao.QualifiedTable("expense_entries")), groupID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -448,7 +470,7 @@ func pullEntries(tx *gorm.DB, groupID string) ([]dao.ExpenseEntry, error) {
 
 func pullAdjustments(tx *gorm.DB, groupID string) ([]dao.ExpenseCategoryAdjustment, error) {
 	var rows []dao.ExpenseCategoryAdjustment
-	if err := tx.Raw(`
+	if err := tx.Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -459,10 +481,10 @@ func pullAdjustments(tx *gorm.DB, groupID string) ([]dao.ExpenseCategoryAdjustme
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_category_adjustments
+		from %s
 		where group_id = ?::uuid
 		order by occurred_on desc, updated_at desc
-	`, groupID).Scan(&rows).Error; err != nil {
+	`, dao.QualifiedTable("expense_category_adjustments")), groupID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -470,7 +492,7 @@ func pullAdjustments(tx *gorm.DB, groupID string) ([]dao.ExpenseCategoryAdjustme
 
 func pullMerchants(tx *gorm.DB, groupID string) ([]dao.ExpenseMerchant, error) {
 	var rows []dao.ExpenseMerchant
-	if err := tx.Raw(`
+	if err := tx.Raw(fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -481,10 +503,10 @@ func pullMerchants(tx *gorm.DB, groupID string) ([]dao.ExpenseMerchant, error) {
 			created_at,
 			updated_at,
 			deleted_at
-		from public.expense_merchants
+		from %s
 		where group_id = ?::uuid
 		order by usage_count desc, updated_at desc
-	`, groupID).Scan(&rows).Error; err != nil {
+	`, dao.QualifiedTable("expense_merchants")), groupID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -500,9 +522,24 @@ func filterAccountsByGroup(records []dao.ExpenseAccount, groupID string) []dao.E
 	return filtered
 }
 
-func filterCategoriesByGroup(records []dao.ExpenseCategory, groupID string) []dao.ExpenseCategory {
+func filterCategoriesByGroup(records []dao.ExpenseCategory, groupID string, authUserID string) []dao.ExpenseCategory {
 	filtered := make([]dao.ExpenseCategory, 0, len(records))
+	authUserID = strings.TrimSpace(authUserID)
 	for _, record := range records {
+		if record.GroupID != groupID {
+			continue
+		}
+
+		record.Scope = normalizeCategoryScope(record.Scope)
+		if record.Scope == "user" {
+			if authUserID == "" {
+				continue
+			}
+			record.OwnerUserID = optional(authUserID)
+		} else {
+			record.OwnerUserID = nil
+		}
+
 		if record.GroupID == groupID {
 			filtered = append(filtered, record)
 		}

@@ -117,7 +117,16 @@ func (c *ExpenseController) CreateCategoryV1(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	category, err := c.Service.CreateCategory(r.Context(), groupID, req)
+	authUserID, _ := r.Context().Value(constants.AuthUserIDCtx).(string)
+	authUserID = strings.TrimSpace(authUserID)
+	if authUserID == "" {
+		c.writeJSON(w, http.StatusUnauthorized, response.CategoryResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "unauthorized"},
+		})
+		return
+	}
+
+	category, err := c.Service.CreateCategory(r.Context(), groupID, authUserID, req)
 	if err != nil {
 		c.writeJSON(w, errorStatus(err), response.CategoryResponse{
 			BaseResponse: response.BaseResponse{Success: false, Error: err.Error()},
@@ -140,7 +149,16 @@ func (c *ExpenseController) ListCategoriesV1(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	categories, err := c.Service.ListCategories(r.Context(), groupID)
+	authUserID, _ := r.Context().Value(constants.AuthUserIDCtx).(string)
+	authUserID = strings.TrimSpace(authUserID)
+	if authUserID == "" {
+		c.writeJSON(w, http.StatusUnauthorized, response.CategoryListResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "unauthorized"},
+		})
+		return
+	}
+
+	categories, err := c.Service.ListCategories(r.Context(), groupID, authUserID)
 	if err != nil {
 		c.writeJSON(w, errorStatus(err), response.CategoryListResponse{
 			BaseResponse: response.BaseResponse{Success: false, Error: err.Error()},
@@ -308,7 +326,16 @@ func (c *ExpenseController) CreateAdjustmentV1(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	record, err := c.Service.CreateAdjustment(r.Context(), groupID, req)
+	authUserID, _ := r.Context().Value(constants.AuthUserIDCtx).(string)
+	authUserID = strings.TrimSpace(authUserID)
+	if authUserID == "" {
+		c.writeJSON(w, http.StatusUnauthorized, response.AdjustmentResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "unauthorized"},
+		})
+		return
+	}
+
+	record, err := c.Service.CreateAdjustment(r.Context(), groupID, authUserID, req)
 	if err != nil {
 		c.writeJSON(w, errorStatus(err), response.AdjustmentResponse{
 			BaseResponse: response.BaseResponse{Success: false, Error: err.Error()},

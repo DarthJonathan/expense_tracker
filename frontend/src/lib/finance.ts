@@ -5,6 +5,7 @@ import type {
 	Account,
 	AccountType,
 	Category,
+	CategoryScope,
 	CategoryType,
 	CategoryAdjustment,
 	EntryType,
@@ -66,12 +67,27 @@ export const finance = {
 
 		const groupId = state.settings.activeGroupId;
 		const now = isoNow();
+		const type = normalizeText(formData.get('type'), 'expense') as EntryType;
+		const categoryId = normalizeText(formData.get('categoryId'));
+		const category = state.categories.find((item) => {
+			if (item.id !== categoryId || item.groupId !== groupId || item.deletedAt) return false;
+			const scope = normalizeCategoryScope(item.scope);
+			if (scope === 'user' && item.ownerUserId && item.ownerUserId !== state.settings.deviceUserId) return false;
+			return true;
+		});
+		if (!category) {
+			throw new Error('Category not found for this household.');
+		}
+		const categoryType = normalizeCategoryType(category.type, category.name);
+		if (categoryType !== type) {
+			throw new Error(`Category "${category.name}" is ${categoryType}, but transaction is ${type}.`);
+		}
 		const entry: LedgerEntry = {
 			id: makeId(),
 			groupId,
 			accountId: normalizeText(formData.get('accountId')),
-			categoryId: normalizeText(formData.get('categoryId')),
-			type: normalizeText(formData.get('type'), 'expense') as EntryType,
+			categoryId,
+			type,
 			amount: cents(formData.get('amount')),
 			currency: normalizeText(formData.get('currency'), 'USD').toUpperCase(),
 			occurredOn: normalizeText(formData.get('occurredOn'), todayInputValue()),
@@ -108,11 +124,32 @@ export const finance = {
 		await mutate('accounts', 'accounts', account);
 	},
 
+	async updateAccount(accountId: string, formData: FormData) {
+		const state = get(financeState);
+		if (!state) return;
+
+		const existing = state.accounts.find((account) => account.id === accountId && !account.deletedAt);
+		if (!existing) return;
+
+		const type = normalizeText(formData.get('type'), existing.type) as AccountType;
+		const next: Account = touch({
+			...existing,
+			name: normalizeText(formData.get('name'), existing.name),
+			type,
+			openingBalance: cents(formData.get('openingBalance')),
+			color: normalizeText(formData.get('color'), existing.color),
+			icon: normalizeText(formData.get('icon'), accountIconByType(type))
+		});
+
+		await mutate('accounts', 'accounts', next);
+	},
+
 	async addCategory(formData: FormData) {
 		const state = get(financeState);
 		if (!state) return;
 
 		const now = isoNow();
+		const scope = normalizeCategoryScope(normalizeText(formData.get('scope'), 'household'));
 		const category: Category = {
 			id: makeId(),
 			groupId: state.settings.activeGroupId,
@@ -121,6 +158,8 @@ export const finance = {
 				normalizeText(formData.get('type')),
 				normalizeText(formData.get('name'), 'New category')
 			),
+			scope,
+			ownerUserId: scope === 'user' ? state.settings.deviceUserId : null,
 			color: normalizeText(formData.get('color'), '#e7d24e'),
 			icon: normalizeText(formData.get('icon'), categoryIconByName(normalizeText(formData.get('name'), 'Category'))),
 			monthlyTarget: cents(formData.get('monthlyTarget')),
@@ -130,6 +169,30 @@ export const finance = {
 		};
 
 		await mutate('categories', 'categories', category);
+	},
+
+	async updateCategory(categoryId: string, formData: FormData) {
+		const state = get(financeState);
+		if (!state) return;
+
+		const existing = state.categories.find((category) => category.id === categoryId && !category.deletedAt);
+		if (!existing) return;
+
+		const name = normalizeText(formData.get('name'), existing.name);
+		const type = normalizeCategoryType(normalizeText(formData.get('type')), name);
+		const scope = normalizeCategoryScope(normalizeText(formData.get('scope'), existing.scope ?? 'household'));
+		const next: Category = touch({
+			...existing,
+			name,
+			type,
+			scope,
+			ownerUserId: scope === 'user' ? existing.ownerUserId ?? state.settings.deviceUserId : null,
+			color: normalizeText(formData.get('color'), existing.color),
+			icon: normalizeText(formData.get('icon'), categoryIconByName(name)),
+			monthlyTarget: cents(formData.get('monthlyTarget'))
+		});
+
+		await mutate('categories', 'categories', next);
 	},
 
 	async addAdjustment(formData: FormData) {
@@ -263,4 +326,8 @@ function normalizeCategoryType(value: string, nameFallback: string): CategoryTyp
 		return 'income';
 	}
 	return 'expense';
+}
+
+function normalizeCategoryScope(value: string): CategoryScope {
+	return value.toLowerCase().trim() === 'user' ? 'user' : 'household';
 }

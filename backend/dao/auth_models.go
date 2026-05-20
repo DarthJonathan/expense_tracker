@@ -13,7 +13,7 @@ type ExpenseUser struct {
 }
 
 func (ExpenseUser) TableName() string {
-	return "public.expense_users"
+	return QualifiedTable("expense_users")
 }
 
 type ExpenseAPIKey struct {
@@ -31,5 +31,5 @@ type ExpenseAPIKey struct {
 }
 
 func (ExpenseAPIKey) TableName() string {
-	return "public.expense_api_keys"
+	return QualifiedTable("expense_api_keys")
 }

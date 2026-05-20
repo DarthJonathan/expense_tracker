@@ -9,7 +9,8 @@ type Config struct {
 	} `yaml:"server" env-prefix:"SERVER_"`
 
 	Database struct {
-		URL string `yaml:"url" env:"DATABASE_URL"`
+		URL    string `yaml:"url" env:"DATABASE_URL"`
+		Schema string `yaml:"schema" env:"DB_SCHEMA" env-default:"spendit"`
 	} `yaml:"database" env-prefix:"DB_"`
 
 	Cors struct {

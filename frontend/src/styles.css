@@ -304,7 +304,7 @@ form {
 .payment-cards,
 .quick-menu {
 	display: grid;
-	gap: 0;
+	gap: 0.9rem;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -623,7 +623,7 @@ form {
 }
 
 .primary-button,
-.form-card button:not(.entry-type-tab):not(.bits-select-trigger),
+.form-card button:not(.entry-type-tab):not(.bits-select-trigger):not(.date-picker-trigger),
 .button-row button {
 	background: var(--primary);
 	border-radius: 16px;
@@ -652,6 +652,10 @@ form {
 .settings-screen .theme-toggle-button,
 .settings-screen .button-row {
 	margin-top: 0.75rem;
+}
+
+.settings-shortcuts .button-row {
+	margin-bottom: 0.75rem;
 }
 
 .connection {
@@ -858,8 +862,8 @@ form {
 
 .ring-wrap strong {
 	color: #eeeeef;
-	font-size: clamp(1.65rem, 8.6vw, 2.65rem);
-	font-weight: 700;
+	font-size: clamp(1.35rem, 6.8vw, 2.2rem);
+	font-weight: 600;
 	line-height: 1.05;
 	max-width: 100%;
 	overflow: hidden;
@@ -949,7 +953,7 @@ form {
 	}
 
 	.ring-wrap strong {
-		font-size: clamp(1.45rem, 8.2vw, 2.35rem);
+		font-size: clamp(1.25rem, 7vw, 2rem);
 	}
 }
 
@@ -1124,7 +1128,7 @@ form {
 	}
 
 	.ring-wrap strong {
-		font-size: 2.45rem;
+		font-size: 1.9rem;
 	}
 
 	.field-grid,
@@ -1352,7 +1356,7 @@ body {
 	outline: 0;
 }
 
-.form-card button:not(.entry-type-tab):not(.bits-select-trigger):not(.primary-button),
+.form-card button:not(.entry-type-tab):not(.bits-select-trigger):not(.date-picker-trigger):not(.primary-button),
 .button-row button {
 	background: var(--primary);
 	border: 1px solid var(--primary);
@@ -1375,7 +1379,7 @@ body {
 	border-radius: 999px;
 }
 
-.form-card button:not(.entry-type-tab):not(.bits-select-trigger):hover,
+.form-card button:not(.entry-type-tab):not(.bits-select-trigger):not(.date-picker-trigger):hover,
 .button-row button:hover {
 	background: var(--primary-pressed);
 }
@@ -1478,7 +1482,7 @@ body {
 	align-items: center;
 	display: grid;
 	gap: 0.75rem;
-	grid-template-columns: 3.8rem minmax(0, 1.25fr) minmax(0, 0.8fr) auto;
+	grid-template-columns: minmax(3.8rem, 0.85fr) minmax(0, 1.45fr) minmax(0, 0.95fr) minmax(6.8rem, 1fr);
 }
 
 .transaction-table-head {
@@ -1547,6 +1551,13 @@ body {
 
 .transaction-table b {
 	font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+	text-align: right;
+}
+
+.transaction-table-head span:last-child,
+.transaction-table button b,
+.transaction-table article b {
+	justify-self: end;
 	text-align: right;
 }
 
@@ -1960,7 +1971,7 @@ body {
 		margin-top: 0.75rem;
 	}
 
-	.desktop-form-grid button:not(.entry-type-tab),
+	.desktop-form-grid button:not(.entry-type-tab):not(.bits-select-trigger):not(.date-picker-trigger),
 	.desktop-card .button-row button {
 		background: var(--primary);
 		border: 1px solid var(--primary);
@@ -1987,6 +1998,16 @@ body {
 		display: grid;
 		gap: 0.75rem;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.desktop-inline-wizard-actions .ghost {
+		background: var(--field);
+		border: 1px solid var(--line);
+		color: var(--ink);
+	}
+
+	.desktop-inline-wizard-actions .ghost:hover {
+		background: color-mix(in srgb, var(--panel-hover) 55%, transparent);
 	}
 
 	.wide-card {
@@ -2224,6 +2245,7 @@ body {
 	}
 
 	.desktop-account-list article,
+	.desktop-account-list .desktop-account-row,
 	.desktop-table article,
 	.desktop-table-head {
 		align-items: center;
@@ -2235,6 +2257,42 @@ body {
 
 	.desktop-account-list article {
 		grid-template-columns: auto 1fr auto;
+	}
+
+	.desktop-account-list .desktop-account-row {
+		background: transparent;
+		border-left: 0;
+		border-right: 0;
+		border-bottom: 0;
+		border-radius: 0;
+		color: var(--ink);
+		cursor: pointer;
+		grid-template-columns: auto 1fr auto;
+		text-align: left;
+		width: 100%;
+	}
+
+	.desktop-account-list .desktop-account-row:hover {
+		background: color-mix(in srgb, var(--panel-hover) 52%, transparent);
+	}
+
+	.desktop-account-list .desktop-account-row[aria-expanded='true'] {
+		background: color-mix(in srgb, var(--panel-hover) 72%, transparent);
+	}
+
+	.desktop-row-action {
+		color: var(--muted);
+		font-family: inherit;
+		font-size: 0.82rem;
+		font-weight: 800;
+		text-transform: uppercase;
+	}
+
+	.desktop-row-editor {
+		border-top: 0;
+		margin-top: 0.2rem;
+		overflow: hidden;
+		padding-top: 0.65rem;
 	}
 
 	.entity-lead {

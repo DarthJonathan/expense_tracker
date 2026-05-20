@@ -62,19 +62,21 @@ export function createDefaultAccounts(groupId: string): Account[] {
 export function createDefaultCategories(groupId: string): Category[] {
 	const now = isoNow();
 	const names = [
-		['Groceries', 'expense', '#e7d24e', '🛒'],
-		['Eating out', 'expense', '#df704f', '🍽️'],
-		['Transport', 'expense', '#8f9984', '🚗'],
-		['Home', 'expense', '#4b5745', '🏠'],
-		['Health', 'expense', '#c5caba', '🩺'],
-		['Income', 'income', '#171a15', '💼']
+		['Groceries', 'expense', 'household', '#e7d24e', '🛒'],
+		['Eating out', 'expense', 'household', '#df704f', '🍽️'],
+		['Transport', 'expense', 'household', '#8f9984', '🚗'],
+		['Home', 'expense', 'household', '#4b5745', '🏠'],
+		['Health', 'expense', 'household', '#c5caba', '🩺'],
+		['Income', 'income', 'household', '#171a15', '💼']
 	] as const;
 
-	return names.map(([name, type, color, icon]) => ({
+	return names.map(([name, type, scope, color, icon]) => ({
 		id: makeId(),
 		groupId,
 		name,
 		type,
+		scope,
+		ownerUserId: null,
 		color,
 		icon,
 		monthlyTarget: 0,

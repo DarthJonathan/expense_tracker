@@ -2,6 +2,7 @@
 	import {
 		BarChart3,
 		CalendarDays,
+		ChevronDown,
 		ClipboardList,
 		CreditCard,
 		Home,
@@ -14,20 +15,22 @@
 		Wifi,
 		WifiOff
 	} from 'lucide-svelte';
-	import { DatePicker, Meter, Tabs } from 'bits-ui';
+	import { Collapsible, DatePicker, Meter, Tabs } from 'bits-ui';
 	import { parseDate, type DateValue } from '@internationalized/date';
 	import AppSelect from '$lib/components/AppSelect.svelte';
 	import { onMount } from 'svelte';
+	import { slide } from 'svelte/transition';
 	import { buildPeriodSummaries, getCurrentBalance, periodKey, readablePeriod } from '$lib/reporting';
 	import { finance } from '$lib/finance';
 	import { clearSession, generateApiKey, getStoredSession, login, register, type APIKeyData, type AuthSession } from '$lib/auth';
 	import { patchSettings } from '$lib/db';
 	import { searchTransactionsRemote } from '$lib/transactions';
-	import type { CategoryType, LedgerEntry, PeriodCategoryTotal, PeriodGrain } from '$lib/types';
+	import type { CategoryScope, CategoryType, LedgerEntry, PeriodCategoryTotal, PeriodGrain } from '$lib/types';
 	import { currency, formatSignedCurrency, isActive, todayInputValue } from '$lib/utils';
 
 	type Screen = 'home' | 'review' | 'add' | 'transactions' | 'search' | 'transactionDetail' | 'settings';
 	type DesktopScreen = 'dashboard' | 'transactions' | 'accounts' | 'review' | 'settings' | 'add';
+	type SettingsSubpage = 'overview' | 'accounts' | 'accountEdit' | 'categories' | 'categoryEdit' | 'adjustments';
 	type StatItem = { name: string; color: string; amount: number };
 	type BudgetComparisonItem = { id: string; name: string; spent: number; target: number; fillPercent: number };
 	type FeedbackKind = 'success' | 'error';
@@ -88,7 +91,14 @@
 	let adjustmentCategoryId = '';
 	let accountFormType = 'cash';
 	let categoryFormType: CategoryType = 'expense';
+	let categoryFormScope: CategoryScope = 'household';
 	let themeMode: 'light' | 'dark' = 'light';
+	let settingsSubpage: SettingsSubpage = 'overview';
+	let selectedSettingsAccountId = '';
+	let selectedSettingsCategoryId = '';
+	let selectedSettingsAccountType: 'cash' | 'bank' | 'card' | 'wallet' = 'bank';
+	let selectedSettingsCategoryType: CategoryType = 'expense';
+	let selectedSettingsCategoryScope: CategoryScope = 'household';
 	const entryTypeOptions: SelectOption[] = [
 		{ value: 'expense', label: 'Expense' },
 		{ value: 'income', label: 'Income' }
@@ -102,6 +112,10 @@
 	const categoryTypeOptions: SelectOption[] = [
 		{ value: 'expense', label: 'Expense' },
 		{ value: 'income', label: 'Income' }
+	];
+	const categoryScopeOptions: SelectOption[] = [
+		{ value: 'household', label: 'Household' },
+		{ value: 'user', label: 'User' }
 	];
 	const grainOptions: SelectOption[] = [
 		{ value: 'month', label: 'Monthly' },
@@ -129,12 +143,21 @@
 			.map((category, index) => ({
 				...category,
 				type: normalizeCategoryType(category.type, category.name),
+				scope: normalizeCategoryScope(category.scope),
+				ownerUserId: category.ownerUserId ?? null,
 				color: displayColor(category.color, index + 1)
-			})) ?? [];
+			}))
+			.filter((category) => isCategoryVisibleToUser(category, state?.settings.deviceUserId ?? '')) ?? [];
 	$: addCategoryOptions = getEntryCategoryOptions(categories, selectedEntryType);
 	$: accountSelectOptions = accounts.map((account) => ({ value: account.id, label: account.name }));
-	$: categorySelectOptions = addCategoryOptions.map((category) => ({ value: category.id, label: category.name }));
-	$: settingsCategoryOptions = categories.map((category) => ({ value: category.id, label: category.name }));
+	$: categorySelectOptions = addCategoryOptions.map((category) => ({
+		value: category.id,
+		label: `${category.name} (${categoryScopeLabel(category.scope)})`
+	}));
+	$: settingsCategoryOptions = categories.map((category) => ({
+		value: category.id,
+		label: `${category.name} (${categoryScopeLabel(category.scope)})`
+	}));
 	$: {
 		if (settingsCategoryOptions.length === 0) {
 			adjustmentCategoryId = '';
@@ -161,10 +184,22 @@
 		state?.adjustments.filter((adjustment) => adjustment.groupId === state.settings.activeGroupId && isActive(adjustment)) ??
 		[];
 	$: merchants = state?.merchants.filter((merchant) => merchant.groupId === state.settings.activeGroupId && isActive(merchant)) ?? [];
+	$: categoryById = new Map(categories.map((category) => [category.id, category]));
 	$: summaries = buildPeriodSummaries(accounts, categories, entries, adjustments, grain);
 	$: currentSummary = summaries[0];
-	$: currentBalance = getCurrentBalance(accounts, entries);
-	$: personalEntries = entries.filter((entry) => entry.createdBy === state?.settings.deviceUserId);
+	$: householdEntries = entries.filter((entry) => {
+		const category = categoryById.get(entry.categoryId);
+		return normalizeCategoryScope(category?.scope) === 'household';
+	});
+	$: currentBalance = getCurrentBalance(accounts, householdEntries);
+	$: personalEntries = entries.filter((entry) => {
+		const category = categoryById.get(entry.categoryId);
+		if (normalizeCategoryScope(category?.scope) === 'user') {
+			if (!category?.ownerUserId) return true;
+			return category.ownerUserId === state?.settings.deviceUserId;
+		}
+		return false;
+	});
 	$: personalIncome = personalEntries
 		.filter((entry) => entry.type === 'income')
 		.reduce((sum, entry) => sum + entry.amount, 0);
@@ -216,6 +251,15 @@
 			meterPercent
 		};
 	});
+	$: selectedSettingsAccount = accounts.find((account) => account.id === selectedSettingsAccountId) ?? null;
+	$: selectedSettingsCategory = categories.find((category) => category.id === selectedSettingsCategoryId) ?? null;
+	$: if (selectedSettingsAccount) {
+		selectedSettingsAccountType = selectedSettingsAccount.type;
+	}
+	$: if (selectedSettingsCategory) {
+		selectedSettingsCategoryType = normalizeCategoryType(selectedSettingsCategory.type, selectedSettingsCategory.name);
+		selectedSettingsCategoryScope = normalizeCategoryScope(selectedSettingsCategory.scope);
+	}
 	$: desktopBalanceSeries = summaries.length
 		? summaries.slice(0, 8).reverse()
 		: [
@@ -343,6 +387,46 @@
 			showFeedback('success', 'Category added', 'New category created successfully.');
 		} catch (error) {
 			showFeedback('error', 'Failed', error instanceof Error ? error.message : 'Unable to add category.');
+		}
+	}
+
+	function openSettingsSubpage(next: SettingsSubpage): void {
+		settingsSubpage = next;
+	}
+
+	function openAccountEditor(accountId: string): void {
+		selectedSettingsAccountId = selectedSettingsAccountId === accountId ? '' : accountId;
+		desktopScreen = 'accounts';
+		desktopAddAccountWizardOpen = false;
+		settingsSubpage = 'accountEdit';
+	}
+
+	function openCategoryEditor(categoryId: string): void {
+		selectedSettingsCategoryId = selectedSettingsCategoryId === categoryId ? '' : categoryId;
+		desktopScreen = 'accounts';
+		desktopAddCategoryWizardOpen = false;
+		settingsSubpage = 'categoryEdit';
+	}
+
+	async function submitAccountUpdate(event: SubmitEvent): Promise<void> {
+		if (!selectedSettingsAccountId) return;
+		try {
+			await submitAndSync((formData) => finance.updateAccount(selectedSettingsAccountId, formData), event);
+			showFeedback('success', 'Account updated', 'Account details were saved.');
+			settingsSubpage = 'accounts';
+		} catch (error) {
+			showFeedback('error', 'Failed', error instanceof Error ? error.message : 'Unable to update account.');
+		}
+	}
+
+	async function submitCategoryUpdate(event: SubmitEvent): Promise<void> {
+		if (!selectedSettingsCategoryId) return;
+		try {
+			await submitAndSync((formData) => finance.updateCategory(selectedSettingsCategoryId, formData), event);
+			showFeedback('success', 'Category updated', 'Category details were saved.');
+			settingsSubpage = 'categories';
+		} catch (error) {
+			showFeedback('error', 'Failed', error instanceof Error ? error.message : 'Unable to update category.');
 		}
 	}
 
@@ -605,17 +689,35 @@
 		return 'expense';
 	}
 
+	function normalizeCategoryScope(value: string | null | undefined): CategoryScope {
+		return value?.toLowerCase().trim() === 'user' ? 'user' : 'household';
+	}
+
+	function isCategoryVisibleToUser(
+		category: { scope?: string | null; ownerUserId?: string | null },
+		userId: string
+	): boolean {
+		const scope = normalizeCategoryScope(category.scope);
+		if (scope === 'household') return true;
+		if (!userId) return false;
+		if (!category.ownerUserId) return true;
+		return category.ownerUserId === userId;
+	}
+
 	function categoryTypeLabel(categoryType: CategoryType): string {
 		return categoryType === 'income' ? 'Income' : 'Expense';
 	}
 
-	function getEntryCategoryOptions(
-		allCategories: typeof categories,
-		entryType: 'expense' | 'income'
-	): typeof categories {
-		const filtered = allCategories.filter((category) => normalizeCategoryType(category.type, category.name) === entryType);
-		return filtered.length ? filtered : allCategories;
+	function categoryScopeLabel(categoryScope: CategoryScope): string {
+		return categoryScope === 'user' ? 'User' : 'Household';
 	}
+
+function getEntryCategoryOptions(
+	allCategories: typeof categories,
+	entryType: 'expense' | 'income'
+): typeof categories {
+	return allCategories.filter((category) => normalizeCategoryType(category.type, category.name) === entryType);
+}
 
 	function ringSegmentStyle(items: StatItem[], index: number): string {
 		const circumference = 565;
@@ -1059,7 +1161,7 @@
 							<div class="category-progress-head">
 								<div>
 									<strong>{categoryEmoji(category)} {category.name}</strong>
-									<small>{categoryTypeLabel(category.type)} · Target {currency(category.target)}</small>
+									<small>{categoryScopeLabel(category.scope)} · {categoryTypeLabel(category.type)} · Target {currency(category.target)}</small>
 								</div>
 								<b>{currency(category.amount)}</b>
 							</div>
@@ -1266,7 +1368,7 @@
 									{/snippet}
 								</DatePicker.Input>
 								<DatePicker.Trigger class="date-picker-trigger" aria-label="Open calendar">
-									<CalendarDays size={18} />
+									<ChevronDown size={18} />
 								</DatePicker.Trigger>
 							</div>
 							<DatePicker.Portal>
@@ -1449,135 +1551,296 @@
 			{/if}
 		</section>
 	{:else}
-			<section class="screen settings-screen">
-				<header class="screen-header">
-					<span class="header-spacer"></span>
-					<h1>Settings</h1>
-					<span class:offline={!isOnline} class="connection">
+		<section class="screen settings-screen">
+			<header class="screen-header">
+				<span class="header-spacer"></span>
+				<h1>Settings</h1>
+				<span class:offline={!isOnline} class="connection">
 					{#if isOnline}<Wifi size={16} />{:else}<WifiOff size={16} />{/if}
 				</span>
 			</header>
 
-			<div class="quick-menu">
-				<article>
-					<CreditCard size={24} />
-					<h3>{accounts.length} accounts</h3>
-					<p>{accounts.map((account) => account.name).join(', ')}</p>
-				</article>
-				<article>
-					<BarChart3 size={24} />
-					<h3>{categories.length} categories</h3>
-					<p>{categories.slice(0, 3).map((category) => category.name).join(', ')}</p>
-				</article>
-			</div>
-
-			<section class="settings-list">
-				<h2>Account information</h2>
-				{#each accounts as account}
+			{#if settingsSubpage === 'overview'}
+				<div class="quick-menu">
 					<article>
-						<span style={`--swatch:${account.color}`}></span>
-						<div>
-							<strong>{accountEmoji(account)} {account.name}</strong>
-							<small>{account.type}</small>
-						</div>
-						<b>{currency(accountBalance(account.id))}</b>
+						<CreditCard size={24} />
+						<h3>{accounts.length} accounts</h3>
+						<p>{accounts.map((account) => account.name).join(', ')}</p>
 					</article>
-				{/each}
-			</section>
-
-			<form class="form-card" on:submit|preventDefault={(event) => submitAndSync(finance.addAdjustment, event)}>
-				<h2>Manual category add/minus</h2>
-				<AppSelect
-					ariaLabel="Adjustment category"
-					bind:value={adjustmentCategoryId}
-					disabled={settingsCategoryOptions.length === 0}
-					name="categoryId"
-					options={settingsCategoryOptions}
-					placeholder="No categories configured"
-					required
-				/>
-				<div class="field-grid">
-					<input name="amount" type="text" inputmode="decimal" placeholder="+/- amount" on:input={formatAmountInput} required />
-					<input name="occurredOn" type="date" value={todayInputValue()} />
+					<article>
+						<BarChart3 size={24} />
+						<h3>{categories.length} categories</h3>
+						<p>{categories.slice(0, 3).map((category) => category.name).join(', ')}</p>
+					</article>
 				</div>
-				<input name="note" placeholder="Adjustment note" />
-				<button type="submit">Adjust category</button>
-			</form>
 
-			<form class="form-card" on:submit|preventDefault={(event) => submitAndSync(finance.addAccount, event)}>
-				<h2>Add account</h2>
-				<input name="name" placeholder="Account name" required />
-				<div class="field-grid">
-					<AppSelect ariaLabel="Account type" bind:value={accountFormType} name="type" options={accountTypeOptions} />
-					<input name="openingBalance" type="text" inputmode="decimal" placeholder="Opening" on:input={formatAmountInput} />
-				</div>
-				<input name="icon" placeholder="Emoji icon (e.g. 🏦)" />
-				<input name="color" type="color" value="#2563eb" title="Account color" />
-				<button type="submit">Add account</button>
-			</form>
-
-			<form class="form-card" on:submit|preventDefault={(event) => submitAndSync(finance.addCategory, event)}>
-				<h2>Add category</h2>
-				<input name="name" placeholder="Category name" required />
-				<div class="field-grid">
-					<AppSelect ariaLabel="Category type" bind:value={categoryFormType} name="type" options={categoryTypeOptions} />
-					<input name="monthlyTarget" type="text" inputmode="decimal" placeholder="Monthly target" on:input={formatAmountInput} />
-				</div>
-				<input name="icon" placeholder="Emoji icon (e.g. 🛒)" />
-				<input name="color" type="color" value="#10b981" title="Category color" />
-				<button type="submit">Add category</button>
-			</form>
-
-			<form class="form-card" on:submit|preventDefault={(event) => submitAndSync(finance.updateGroupName, event)}>
-				<h2>Group</h2>
-				<input name="name" value={activeGroup?.name ?? ''} placeholder="Group name" />
-				<p class="muted">Invite code {activeGroup?.inviteCode ?? 'LOCAL'}</p>
-				<button type="submit">Rename group</button>
-			</form>
-
-			<section class="form-card">
-				<h2>Appearance</h2>
-				<p class="muted">Current mode: {themeMode === 'dark' ? 'Dark' : 'Light'}</p>
-				<button class="ghost theme-toggle-button" type="button" on:click={toggleTheme}>
-					{#if themeMode === 'dark'}
-						<Sun size={16} />
-						Switch to light mode
-					{:else}
-						<Moon size={16} />
-						Switch to dark mode
-					{/if}
-				</button>
-			</section>
-
-			<section class="form-card">
-				<h2>Server sync</h2>
-				<p class="muted">{$syncStatus.message}</p>
-				<p class="muted">Signed in as {authSession?.user.email}</p>
-				<div class="button-row">
-					<button type="button" on:click={() => finance.syncNow()}>
-						<RefreshCw size={16} />
-						Sync now
-					</button>
-					<button class="ghost" type="button" on:click={logout}>Logout</button>
-				</div>
-			</section>
-
-			<form class="form-card" on:submit|preventDefault={handleCreateApiKey}>
-				<h2>API keys</h2>
-				<p class="muted">Generate API keys for scripts or backend callers.</p>
-				<input name="name" placeholder="Key name (e.g. Household sync script)" required />
-				<button type="submit" disabled={generatingApiKey}>{generatingApiKey ? 'Generating...' : 'Generate API key'}</button>
-				{#if apiKeyFormError}
-					<p class="auth-error">{apiKeyFormError}</p>
-				{/if}
-				{#if generatedApiKey}
-					<div class="generated-api-key">
-						<p>Copy now (shown once)</p>
-						<input value={generatedApiKey.key} readonly />
-						<button type="button" on:click={copyGeneratedApiKey}>Copy key</button>
+				<section class="form-card settings-shortcuts">
+					<h2>Manage data</h2>
+					<p class="muted">Use focused pages for accounts, categories, and adjustments.</p>
+					<div class="button-row">
+						<button type="button" on:click={() => openSettingsSubpage('accounts')}>Modify accounts</button>
+						<button type="button" on:click={() => openSettingsSubpage('categories')}>Modify categories</button>
 					</div>
-				{/if}
-			</form>
+					<button class="ghost" type="button" on:click={() => openSettingsSubpage('adjustments')}>Manual category add/minus</button>
+				</section>
+
+				<form class="form-card" on:submit|preventDefault={(event) => submitAndSync(finance.updateGroupName, event)}>
+					<h2>Group</h2>
+					<input name="name" value={activeGroup?.name ?? ''} placeholder="Group name" />
+					<p class="muted">Invite code {activeGroup?.inviteCode ?? 'LOCAL'}</p>
+					<button type="submit">Rename group</button>
+				</form>
+
+				<section class="form-card">
+					<h2>Appearance</h2>
+					<p class="muted">Current mode: {themeMode === 'dark' ? 'Dark' : 'Light'}</p>
+					<button class="ghost theme-toggle-button" type="button" on:click={toggleTheme}>
+						{#if themeMode === 'dark'}
+							<Sun size={16} />
+							Switch to light mode
+						{:else}
+							<Moon size={16} />
+							Switch to dark mode
+						{/if}
+					</button>
+				</section>
+
+				<section class="form-card">
+					<h2>Server sync</h2>
+					<p class="muted">{$syncStatus.message}</p>
+					<p class="muted">Signed in as {authSession?.user.email}</p>
+					<div class="button-row">
+						<button type="button" on:click={() => finance.syncNow()}>
+							<RefreshCw size={16} />
+							Sync now
+						</button>
+						<button class="ghost" type="button" on:click={logout}>Logout</button>
+					</div>
+				</section>
+
+				<form class="form-card" on:submit|preventDefault={handleCreateApiKey}>
+					<h2>API keys</h2>
+					<p class="muted">Generate API keys for scripts or backend callers.</p>
+					<input name="name" placeholder="Key name (e.g. Household sync script)" required />
+					<button type="submit" disabled={generatingApiKey}>{generatingApiKey ? 'Generating...' : 'Generate API key'}</button>
+					{#if apiKeyFormError}
+						<p class="auth-error">{apiKeyFormError}</p>
+					{/if}
+					{#if generatedApiKey}
+						<div class="generated-api-key">
+							<p>Copy now (shown once)</p>
+							<input value={generatedApiKey.key} readonly />
+							<button type="button" on:click={copyGeneratedApiKey}>Copy key</button>
+						</div>
+					{/if}
+				</form>
+			{:else if settingsSubpage === 'accounts'}
+				<section class="settings-list clickable-settings-list">
+					<div class="settings-subpage-heading">
+						<h2>Modify accounts</h2>
+						<button class="ghost" type="button" on:click={() => openSettingsSubpage('overview')}>Back to settings</button>
+					</div>
+					{#each accounts as account}
+						<button class="settings-row-button" type="button" on:click={() => openAccountEditor(account.id)}>
+							<span style={`--swatch:${account.color}`}></span>
+							<div>
+								<strong>{accountEmoji(account)} {account.name}</strong>
+								<small>{account.type}</small>
+							</div>
+							<b>{currency(accountBalance(account.id))}</b>
+						</button>
+					{/each}
+				</section>
+
+				<form class="form-card" on:submit|preventDefault={(event) => submitAndSync(finance.addAccount, event)}>
+					<h2>Add account</h2>
+					<input name="name" placeholder="Account name" required />
+					<div class="field-grid">
+						<AppSelect ariaLabel="Account type" bind:value={accountFormType} name="type" options={accountTypeOptions} />
+						<input name="openingBalance" type="text" inputmode="decimal" placeholder="Opening" on:input={formatAmountInput} />
+					</div>
+					<input name="icon" placeholder="Emoji icon (e.g. 🏦)" />
+					<input name="color" type="color" value="#2563eb" title="Account color" />
+					<button type="submit">Add account</button>
+				</form>
+			{:else if settingsSubpage === 'accountEdit'}
+				<section class="form-card">
+					<div class="settings-subpage-heading">
+						<h2>Edit account</h2>
+						<button class="ghost" type="button" on:click={() => openSettingsSubpage('accounts')}>Back to accounts</button>
+					</div>
+					{#if selectedSettingsAccount}
+						<form on:submit|preventDefault={submitAccountUpdate}>
+							<input name="name" value={selectedSettingsAccount.name} placeholder="Account name" required />
+							<div class="field-grid">
+								<AppSelect ariaLabel="Account type" bind:value={selectedSettingsAccountType} name="type" options={accountTypeOptions} />
+								<input
+									name="openingBalance"
+									type="text"
+									inputmode="decimal"
+									value={currency(selectedSettingsAccount.openingBalance).replace('$', '')}
+									placeholder="Opening"
+									on:input={formatAmountInput}
+								/>
+							</div>
+							<input name="icon" value={selectedSettingsAccount.icon} placeholder="Emoji icon (e.g. 🏦)" />
+							<input name="color" type="color" value={selectedSettingsAccount.color} title="Account color" />
+							<button type="submit">Save account</button>
+						</form>
+					{:else}
+						<p class="empty-card">Account not found.</p>
+					{/if}
+				</section>
+			{:else if settingsSubpage === 'categories'}
+				<section class="settings-list clickable-settings-list">
+					<div class="settings-subpage-heading">
+						<h2>Modify categories</h2>
+						<button class="ghost" type="button" on:click={() => openSettingsSubpage('overview')}>Back to settings</button>
+					</div>
+					{#each categories as category}
+						<button class="settings-row-button" type="button" on:click={() => openCategoryEditor(category.id)}>
+							<span style={`--swatch:${category.color}`}></span>
+							<div>
+								<strong>{categoryEmoji(category)} {category.name}</strong>
+								<small>{categoryScopeLabel(category.scope)} · {categoryTypeLabel(category.type)} · Target {currency(category.monthlyTarget)}</small>
+							</div>
+							<b>{currency(currentCategoryTotals.get(category.id)?.net ?? 0)}</b>
+						</button>
+					{/each}
+				</section>
+
+				<form class="form-card" on:submit|preventDefault={(event) => submitAndSync(finance.addCategory, event)}>
+					<h2>Add category</h2>
+					<input name="name" placeholder="Category name" required />
+					<div class="field-grid">
+						<AppSelect ariaLabel="Category type" bind:value={categoryFormType} name="type" options={categoryTypeOptions} />
+						<AppSelect ariaLabel="Category scope" bind:value={categoryFormScope} name="scope" options={categoryScopeOptions} />
+					</div>
+					<div class="field-grid">
+						<input name="monthlyTarget" type="text" inputmode="decimal" placeholder="Monthly target" on:input={formatAmountInput} />
+					</div>
+					<input name="icon" placeholder="Emoji icon (e.g. 🛒)" />
+					<input name="color" type="color" value="#10b981" title="Category color" />
+					<button type="submit">Add category</button>
+				</form>
+			{:else if settingsSubpage === 'categoryEdit'}
+				<section class="form-card">
+					<div class="settings-subpage-heading">
+						<h2>Edit category</h2>
+						<button class="ghost" type="button" on:click={() => openSettingsSubpage('categories')}>Back to categories</button>
+					</div>
+					{#if selectedSettingsCategory}
+						<form on:submit|preventDefault={submitCategoryUpdate}>
+							<input name="name" value={selectedSettingsCategory.name} placeholder="Category name" required />
+							<div class="field-grid">
+								<AppSelect
+									ariaLabel="Category type"
+									bind:value={selectedSettingsCategoryType}
+									name="type"
+									options={categoryTypeOptions}
+								/>
+								<AppSelect
+									ariaLabel="Category scope"
+									bind:value={selectedSettingsCategoryScope}
+									name="scope"
+									options={categoryScopeOptions}
+								/>
+							</div>
+							<div class="field-grid">
+								<input
+									name="monthlyTarget"
+									type="text"
+									inputmode="decimal"
+									value={currency(selectedSettingsCategory.monthlyTarget).replace('$', '')}
+									placeholder="Monthly target"
+									on:input={formatAmountInput}
+								/>
+							</div>
+							<input name="icon" value={selectedSettingsCategory.icon} placeholder="Emoji icon (e.g. 🛒)" />
+							<input name="color" type="color" value={selectedSettingsCategory.color} title="Category color" />
+							<button type="submit">Save category</button>
+						</form>
+					{:else}
+						<p class="empty-card">Category not found.</p>
+					{/if}
+				</section>
+			{:else if settingsSubpage === 'adjustments'}
+				<form class="form-card" on:submit|preventDefault={(event) => submitAndSync(finance.addAdjustment, event)}>
+					<div class="settings-subpage-heading">
+						<h2>Manual category add/minus</h2>
+						<button class="ghost" type="button" on:click={() => openSettingsSubpage('overview')}>Back to settings</button>
+					</div>
+					<AppSelect
+						ariaLabel="Adjustment category"
+						bind:value={adjustmentCategoryId}
+						disabled={settingsCategoryOptions.length === 0}
+						name="categoryId"
+						options={settingsCategoryOptions}
+						placeholder="No categories configured"
+						required
+					/>
+					<div class="field-grid">
+						<input name="amount" type="text" inputmode="decimal" placeholder="+/- amount" on:input={formatAmountInput} required />
+						<DatePicker.Root bind:value={selectedDate} weekdayFormat="short" fixedWeeks={true}>
+							<div class="date-picker-field">
+								<DatePicker.Input name="occurredOn" class="date-picker-input">
+									{#snippet children({ segments })}
+										{#each segments as segment, index (`settings-adjustment-${segment.part}-${index}`)}
+											{#if segment.part === 'literal'}
+												<span class="date-picker-literal">{segment.value}</span>
+											{:else}
+												<DatePicker.Segment part={segment.part} class="date-picker-segment">
+													{segment.value}
+												</DatePicker.Segment>
+											{/if}
+										{/each}
+									{/snippet}
+								</DatePicker.Input>
+								<DatePicker.Trigger class="date-picker-trigger" aria-label="Open calendar">
+									<ChevronDown size={18} />
+								</DatePicker.Trigger>
+							</div>
+							<DatePicker.Portal>
+								<DatePicker.Content class="date-picker-content" sideOffset={8} align="end">
+									<DatePicker.Calendar class="date-picker-calendar">
+										{#snippet children({ months, weekdays })}
+											<DatePicker.Header class="date-picker-calendar-header">
+												<DatePicker.PrevButton class="date-picker-nav-button" aria-label="Previous month">‹</DatePicker.PrevButton>
+												<DatePicker.Heading class="date-picker-heading" />
+												<DatePicker.NextButton class="date-picker-nav-button" aria-label="Next month">›</DatePicker.NextButton>
+											</DatePicker.Header>
+											{#each months as month}
+												<DatePicker.Grid class="date-picker-grid">
+													<DatePicker.GridHead>
+														<DatePicker.GridRow class="date-picker-grid-row">
+															{#each weekdays as day}
+																<DatePicker.HeadCell class="date-picker-head-cell">{day}</DatePicker.HeadCell>
+															{/each}
+														</DatePicker.GridRow>
+													</DatePicker.GridHead>
+													<DatePicker.GridBody>
+														{#each month.weeks as weekDates}
+															<DatePicker.GridRow class="date-picker-grid-row">
+																{#each weekDates as date}
+																	<DatePicker.Cell {date} month={month.value}>
+																		<DatePicker.Day class="date-picker-day" />
+																	</DatePicker.Cell>
+																{/each}
+															</DatePicker.GridRow>
+														{/each}
+													</DatePicker.GridBody>
+												</DatePicker.Grid>
+											{/each}
+										{/snippet}
+									</DatePicker.Calendar>
+								</DatePicker.Content>
+							</DatePicker.Portal>
+						</DatePicker.Root>
+					</div>
+					<input name="note" placeholder="Adjustment note" />
+					<button type="submit">Adjust category</button>
+				</form>
+			{/if}
 		</section>
 	{/if}
 
@@ -1618,7 +1881,10 @@
 			class:active={activeScreen === 'settings'}
 			title="Settings"
 			type="button"
-			on:click={() => (activeScreen = 'settings')}
+			on:click={() => {
+				activeScreen = 'settings';
+				settingsSubpage = 'overview';
+			}}
 		>
 			<Settings size={23} />
 			<span>Settings</span>
@@ -1818,7 +2084,7 @@
 				</div>
 				<div class="desktop-account-list">
 					{#each accounts as account}
-						<article>
+						<button class="desktop-account-row" type="button" on:click={() => openAccountEditor(account.id)}>
 							<div class="entity-lead">
 								<span class="entity-icon">{accountEmoji(account)}</span>
 								<span style={`--swatch:${account.color}`}></span>
@@ -1828,7 +2094,7 @@
 								<small>{account.type}</small>
 							</div>
 							<b>{currency(accountBalance(account.id))}</b>
-						</article>
+						</button>
 					{/each}
 				</div>
 						{#if desktopAddAccountWizardOpen}
@@ -1861,25 +2127,29 @@
 				</div>
 				<div class="desktop-account-list">
 					{#each categories as category}
-						<article>
+						<button class="desktop-account-row" type="button" on:click={() => openCategoryEditor(category.id)}>
 							<div class="entity-lead">
 								<span class="entity-icon">{categoryEmoji(category)}</span>
 								<span style={`--swatch:${category.color}`}></span>
 							</div>
 							<div>
 								<strong>{category.name}</strong>
-								<small>{categoryTypeLabel(category.type)} · Target {currency(category.monthlyTarget)}</small>
+								<small>{categoryScopeLabel(category.scope)} · {categoryTypeLabel(category.type)} · Target {currency(category.monthlyTarget)}</small>
 							</div>
-						</article>
+							<b class="desktop-row-action">Edit</b>
+						</button>
 					{/each}
 				</div>
 						{#if desktopAddCategoryWizardOpen}
 							<form class="desktop-form-grid desktop-inline-wizard" on:submit|preventDefault={submitDesktopCategoryWizard}>
 								<input name="name" placeholder="Category name" required />
-								<div class="field-grid">
-									<AppSelect ariaLabel="Category type" bind:value={categoryFormType} name="type" options={categoryTypeOptions} />
-									<input name="monthlyTarget" type="text" inputmode="decimal" placeholder="Monthly target" on:input={formatAmountInput} />
-								</div>
+							<div class="field-grid">
+								<AppSelect ariaLabel="Category type" bind:value={categoryFormType} name="type" options={categoryTypeOptions} />
+								<AppSelect ariaLabel="Category scope" bind:value={categoryFormScope} name="scope" options={categoryScopeOptions} />
+							</div>
+							<div class="field-grid">
+								<input name="monthlyTarget" type="text" inputmode="decimal" placeholder="Monthly target" on:input={formatAmountInput} />
+							</div>
 						<input name="icon" placeholder="Emoji icon (e.g. 🛒)" />
 						<input name="color" type="color" value="#10b981" title="Category color" />
 						<div class="desktop-inline-wizard-actions">
@@ -1975,17 +2245,63 @@
 						</div>
 						<div class="desktop-account-list">
 							{#each accounts as account}
-								<article>
-									<div class="entity-lead">
-										<span class="entity-icon">{accountEmoji(account)}</span>
-										<span style={`--swatch:${account.color}`}></span>
-									</div>
-									<div>
-										<strong>{account.name}</strong>
-										<small>{account.type}</small>
-									</div>
-									<b>{currency(accountBalance(account.id))}</b>
-								</article>
+								<Collapsible.Root
+									open={selectedSettingsAccountId === account.id}
+									onOpenChange={(open) => {
+										selectedSettingsAccountId = open ? account.id : '';
+										if (open) desktopAddAccountWizardOpen = false;
+									}}
+								>
+									<Collapsible.Trigger class="desktop-account-row">
+										<div class="entity-lead">
+											<span class="entity-icon">{accountEmoji(account)}</span>
+											<span style={`--swatch:${account.color}`}></span>
+										</div>
+										<div>
+											<strong>{account.name}</strong>
+											<small>{account.type}</small>
+										</div>
+										<b class:desktop-row-action={selectedSettingsAccountId === account.id}>
+											{selectedSettingsAccountId === account.id ? 'Close' : currency(accountBalance(account.id))}
+										</b>
+									</Collapsible.Trigger>
+									<Collapsible.Content forceMount>
+										{#snippet child({ props, open })}
+											{#if open}
+												<form
+													{...props}
+													class="desktop-form-grid desktop-inline-wizard desktop-row-editor"
+													on:submit|preventDefault={submitAccountUpdate}
+													transition:slide={{ duration: 220 }}
+												>
+													<input name="name" value={account.name} placeholder="Account name" required />
+													<div class="field-grid">
+														<AppSelect
+															ariaLabel="Account type"
+															bind:value={selectedSettingsAccountType}
+															name="type"
+															options={accountTypeOptions}
+														/>
+														<input
+															name="openingBalance"
+															type="text"
+															inputmode="decimal"
+															value={currency(account.openingBalance).replace('$', '')}
+															placeholder="Opening"
+															on:input={formatAmountInput}
+														/>
+													</div>
+													<input name="icon" value={account.icon} placeholder="Emoji icon (e.g. 🏦)" />
+													<input name="color" type="color" value={account.color} title="Account color" />
+													<div class="desktop-inline-wizard-actions">
+														<button type="submit">Save account</button>
+														<button class="ghost" type="button" on:click={() => (selectedSettingsAccountId = '')}>Cancel</button>
+													</div>
+												</form>
+											{/if}
+										{/snippet}
+									</Collapsible.Content>
+								</Collapsible.Root>
 							{/each}
 						</div>
 						{#if desktopAddAccountWizardOpen}
@@ -2017,16 +2333,69 @@
 						</div>
 						<div class="desktop-account-list">
 							{#each categories as category}
-								<article>
-									<div class="entity-lead">
-										<span class="entity-icon">{categoryEmoji(category)}</span>
-										<span style={`--swatch:${category.color}`}></span>
-									</div>
-									<div>
-										<strong>{category.name}</strong>
-										<small>{categoryTypeLabel(category.type)} · Target {currency(category.monthlyTarget)}</small>
-									</div>
-								</article>
+								<Collapsible.Root
+									open={selectedSettingsCategoryId === category.id}
+									onOpenChange={(open) => {
+										selectedSettingsCategoryId = open ? category.id : '';
+										if (open) desktopAddCategoryWizardOpen = false;
+									}}
+								>
+									<Collapsible.Trigger class="desktop-account-row">
+										<div class="entity-lead">
+											<span class="entity-icon">{categoryEmoji(category)}</span>
+											<span style={`--swatch:${category.color}`}></span>
+										</div>
+										<div>
+											<strong>{category.name}</strong>
+											<small>{categoryScopeLabel(category.scope)} · {categoryTypeLabel(category.type)} · Target {currency(category.monthlyTarget)}</small>
+										</div>
+										<b class="desktop-row-action">{selectedSettingsCategoryId === category.id ? 'Close' : 'Edit'}</b>
+									</Collapsible.Trigger>
+									<Collapsible.Content forceMount>
+										{#snippet child({ props, open })}
+											{#if open}
+												<form
+													{...props}
+													class="desktop-form-grid desktop-inline-wizard desktop-row-editor"
+													on:submit|preventDefault={submitCategoryUpdate}
+													transition:slide={{ duration: 220 }}
+												>
+													<input name="name" value={category.name} placeholder="Category name" required />
+													<div class="field-grid">
+														<AppSelect
+															ariaLabel="Category type"
+															bind:value={selectedSettingsCategoryType}
+															name="type"
+															options={categoryTypeOptions}
+														/>
+														<AppSelect
+															ariaLabel="Category scope"
+															bind:value={selectedSettingsCategoryScope}
+															name="scope"
+															options={categoryScopeOptions}
+														/>
+													</div>
+													<div class="field-grid">
+														<input
+															name="monthlyTarget"
+															type="text"
+															inputmode="decimal"
+															value={currency(category.monthlyTarget).replace('$', '')}
+															placeholder="Monthly target"
+															on:input={formatAmountInput}
+														/>
+													</div>
+													<input name="icon" value={category.icon} placeholder="Emoji icon (e.g. 🛒)" />
+													<input name="color" type="color" value={category.color} title="Category color" />
+													<div class="desktop-inline-wizard-actions">
+														<button type="submit">Save category</button>
+														<button class="ghost" type="button" on:click={() => (selectedSettingsCategoryId = '')}>Cancel</button>
+													</div>
+												</form>
+											{/if}
+										{/snippet}
+									</Collapsible.Content>
+								</Collapsible.Root>
 							{/each}
 						</div>
 						{#if desktopAddCategoryWizardOpen}
@@ -2188,7 +2557,7 @@
 											{/snippet}
 										</DatePicker.Input>
 										<DatePicker.Trigger class="date-picker-trigger" aria-label="Open calendar">
-											<CalendarDays size={18} />
+											<ChevronDown size={18} />
 										</DatePicker.Trigger>
 									</div>
 									<DatePicker.Portal>

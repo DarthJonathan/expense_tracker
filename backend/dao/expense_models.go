@@ -12,7 +12,7 @@ type ExpenseGroup struct {
 	DeletedAt  *time.Time `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
 }
 
-func (ExpenseGroup) TableName() string { return "public.expense_groups" }
+func (ExpenseGroup) TableName() string { return QualifiedTable("expense_groups") }
 
 type ExpenseAccount struct {
 	ID             string     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
@@ -27,13 +27,15 @@ type ExpenseAccount struct {
 	DeletedAt      *time.Time `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
 }
 
-func (ExpenseAccount) TableName() string { return "public.expense_accounts" }
+func (ExpenseAccount) TableName() string { return QualifiedTable("expense_accounts") }
 
 type ExpenseCategory struct {
 	ID            string     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
 	GroupID       string     `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
 	Name          string     `gorm:"column:name;type:text;not null" json:"name"`
 	Type          string     `gorm:"column:type;type:text;not null;default:'expense';check:type in ('expense','income')" json:"type"`
+	Scope         string     `gorm:"column:scope;type:text;not null;default:'household';check:scope in ('household','user')" json:"scope"`
+	OwnerUserID   *string    `gorm:"column:owner_user_id;type:uuid;index" json:"ownerUserId,omitempty"`
 	Color         string     `gorm:"column:color;type:text;not null;default:'#e7d24e'" json:"color"`
 	Icon          string     `gorm:"column:icon;type:text;not null;default:'🏷️'" json:"icon"`
 	MonthlyTarget int        `gorm:"column:monthly_target;not null;default:0" json:"monthlyTarget"`
@@ -42,7 +44,7 @@ type ExpenseCategory struct {
 	DeletedAt     *time.Time `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
 }
 
-func (ExpenseCategory) TableName() string { return "public.expense_categories" }
+func (ExpenseCategory) TableName() string { return QualifiedTable("expense_categories") }
 
 type ExpenseEntry struct {
 	ID         string     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
@@ -61,7 +63,7 @@ type ExpenseEntry struct {
 	DeletedAt  *time.Time `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
 }
 
-func (ExpenseEntry) TableName() string { return "public.expense_entries" }
+func (ExpenseEntry) TableName() string { return QualifiedTable("expense_entries") }
 
 type ExpenseCategoryAdjustment struct {
 	ID         string     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
@@ -76,7 +78,7 @@ type ExpenseCategoryAdjustment struct {
 }
 
 func (ExpenseCategoryAdjustment) TableName() string {
-	return "public.expense_category_adjustments"
+	return QualifiedTable("expense_category_adjustments")
 }
 
 type ExpenseMerchant struct {
@@ -92,5 +94,5 @@ type ExpenseMerchant struct {
 }
 
 func (ExpenseMerchant) TableName() string {
-	return "public.expense_merchants"
+	return QualifiedTable("expense_merchants")
 }

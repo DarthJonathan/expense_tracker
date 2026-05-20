@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"expense-tracker/backend/constants"
 	"expense-tracker/backend/request"
 	"expense-tracker/backend/response"
 	"expense-tracker/backend/service"
@@ -47,7 +48,16 @@ func (c *SyncController) SyncV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := c.Service.Sync(r.Context(), req)
+	authUserID, _ := r.Context().Value(constants.AuthUserIDCtx).(string)
+	authUserID = strings.TrimSpace(authUserID)
+	if authUserID == "" {
+		c.writeJSON(w, http.StatusUnauthorized, response.SyncResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "unauthorized"},
+		})
+		return
+	}
+
+	result, err := c.Service.Sync(r.Context(), authUserID, req)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if strings.Contains(strings.ToLower(err.Error()), "required") {

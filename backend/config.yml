@@ -4,6 +4,7 @@ server:
 
 database:
   url: "postgres://postgres:postgres@localhost:5432/expense_tracker?sslmode=disable"
+  schema: "spendit"
 
 cors:
   allowOrigin: "http://localhost:3000"

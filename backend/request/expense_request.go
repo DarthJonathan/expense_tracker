@@ -16,6 +16,7 @@ type CreateAccountRequest struct {
 type CreateCategoryRequest struct {
 	Name          string `json:"name"`
 	Type          string `json:"type,omitempty"`
+	Scope         string `json:"scope,omitempty"`
 	Color         string `json:"color,omitempty"`
 	Icon          string `json:"icon,omitempty"`
 	MonthlyTarget int    `json:"monthlyTarget"`

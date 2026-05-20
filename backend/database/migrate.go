@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"strings"
 
 	"expense-tracker/backend/dao"
 
@@ -11,6 +12,10 @@ import (
 func Migrate(db *gorm.DB) error {
 	if err := db.Exec(`create extension if not exists pgcrypto`).Error; err != nil {
 		return fmt.Errorf("create pgcrypto extension: %w", err)
+	}
+	schema := dao.Schema()
+	if err := db.Exec(fmt.Sprintf("create schema if not exists %s", quoteIdentifier(schema))).Error; err != nil {
+		return fmt.Errorf("create schema: %w", err)
 	}
 
 	if err := db.AutoMigrate(
@@ -26,14 +31,47 @@ func Migrate(db *gorm.DB) error {
 		return fmt.Errorf("automigrate tables: %w", err)
 	}
 
+	tables := map[string]string{
+		"categories": dao.QualifiedTable("expense_categories"),
+		"accounts":   dao.QualifiedTable("expense_accounts"),
+		"apiKeys":    dao.QualifiedTable("expense_api_keys"),
+		"merchants":  dao.QualifiedTable("expense_merchants"),
+		"entries":    dao.QualifiedTable("expense_entries"),
+	}
+
 	indexes := []string{
-		`alter table public.expense_categories
+		fmt.Sprintf(`alter table %s
 			add column if not exists type text not null default 'expense'`,
-		`alter table public.expense_categories
+			tables["categories"]),
+		fmt.Sprintf(`alter table %s
+			add column if not exists scope text not null default 'household'`,
+			tables["categories"]),
+		fmt.Sprintf(`alter table %s
+			add column if not exists owner_user_id uuid`,
+			tables["categories"]),
+		fmt.Sprintf(`alter table %s
 			drop constraint if exists expense_categories_type_check`,
-		`alter table public.expense_categories
+			tables["categories"]),
+		fmt.Sprintf(`alter table %s
 			add constraint expense_categories_type_check check (type in ('expense', 'income'))`,
-		`update public.expense_categories
+			tables["categories"]),
+		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_categories_scope_check`,
+			tables["categories"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_categories_scope_check check (scope in ('household', 'user'))`,
+			tables["categories"]),
+		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_categories_scope_owner_check`,
+			tables["categories"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_categories_scope_owner_check
+			check (
+				(scope = 'household' and owner_user_id is null) or
+				(scope = 'user' and owner_user_id is not null)
+			)`,
+			tables["categories"]),
+		`update ` + tables["categories"] + `
 			set type = 'income'
 			where type = 'expense'
 				and (
@@ -41,30 +79,50 @@ func Migrate(db *gorm.DB) error {
 					or lower(name) like '%salary%'
 					or lower(name) like '%payroll%'
 				)`,
-		`create unique index if not exists expense_accounts_group_name_uidx
-			on public.expense_accounts (group_id, lower(name))
+		`update ` + tables["categories"] + `
+			set scope = 'household'
+			where coalesce(scope, '') = ''`,
+		fmt.Sprintf(`create unique index if not exists expense_accounts_group_name_uidx
+			on %s (group_id, lower(name))
 			where deleted_at is null`,
-		`create unique index if not exists expense_categories_group_name_uidx
-			on public.expense_categories (group_id, lower(name))
+			tables["accounts"]),
+		fmt.Sprintf(
+			"drop index if exists %s.%s",
+			quoteIdentifier(schema),
+			quoteIdentifier("expense_categories_group_name_uidx"),
+		),
+		fmt.Sprintf(`create unique index if not exists expense_categories_group_name_uidx
+			on %s (group_id, scope, coalesce(owner_user_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(name))
 			where deleted_at is null`,
-		`create unique index if not exists expense_api_keys_hash_uidx
-			on public.expense_api_keys (key_hash)
+			tables["categories"]),
+		fmt.Sprintf(`create unique index if not exists expense_api_keys_hash_uidx
+			on %s (key_hash)
 			where deleted_at is null and revoked_at is null`,
-		`create index if not exists expense_api_keys_user_idx
-			on public.expense_api_keys (user_id)
+			tables["apiKeys"]),
+		fmt.Sprintf(`create index if not exists expense_api_keys_user_idx
+			on %s (user_id)
 			where deleted_at is null and revoked_at is null`,
-		`drop index if exists expense_merchants_group_normalized_name_uidx`,
-		`create unique index if not exists expense_merchants_group_normalized_name_uidx
-			on public.expense_merchants (group_id, normalized_name)`,
-		`create index if not exists expense_entries_group_period_idx
-			on public.expense_entries (group_id, occurred_on desc)
+			tables["apiKeys"]),
+		fmt.Sprintf(
+			"drop index if exists %s.%s",
+			quoteIdentifier(schema),
+			quoteIdentifier("expense_merchants_group_normalized_name_uidx"),
+		),
+		fmt.Sprintf(`create unique index if not exists expense_merchants_group_normalized_name_uidx
+			on %s (group_id, normalized_name)`,
+			tables["merchants"]),
+		fmt.Sprintf(`create index if not exists expense_entries_group_period_idx
+			on %s (group_id, occurred_on desc)
 			where deleted_at is null`,
-		`create index if not exists expense_entries_group_category_period_idx
-			on public.expense_entries (group_id, category_id, occurred_on desc)
+			tables["entries"]),
+		fmt.Sprintf(`create index if not exists expense_entries_group_category_period_idx
+			on %s (group_id, category_id, occurred_on desc)
 			where deleted_at is null`,
-		`create index if not exists expense_entries_group_account_period_idx
-			on public.expense_entries (group_id, account_id, occurred_on desc)
+			tables["entries"]),
+		fmt.Sprintf(`create index if not exists expense_entries_group_account_period_idx
+			on %s (group_id, account_id, occurred_on desc)
 			where deleted_at is null`,
+			tables["entries"]),
 	}
 
 	for _, statement := range indexes {
@@ -74,4 +132,8 @@ func Migrate(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func quoteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }
