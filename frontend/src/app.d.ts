@@ -8,9 +8,3 @@ declare module 'virtual:pwa-register' {
 		onOfflineReady?: () => void;
 	}): (reloadPage?: boolean) => Promise<void>;
 }
-
-interface Window {
-	__APP_CONFIG__?: {
-		API_BASE_URL?: string;
-	};
-}

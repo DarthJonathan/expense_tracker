@@ -6,6 +6,7 @@ This repository is now split into:
 - `backend/`: Go API service for syncing group data to PostgreSQL
 
 The frontend no longer uses Supabase client SDK directly. It syncs through the backend API (`/api/v1/sync`), and the backend writes to Postgres.
+In deployment, frontend calls same-origin `/api/v1/*` and SvelteKit server proxies to backend (BFF pattern).
 
 ## Project structure
 
@@ -49,8 +50,7 @@ npm run dev
 
 Frontend env:
 
-- `VITE_API_BASE_URL` (default example: `http://localhost:8080`)
-- `API_BASE_URL` (container/runtime config, preferred for Docker deploys)
+- `BACKEND_API_URL` (server-only; used by SvelteKit BFF proxy to reach backend, e.g. `http://backend:8080`)
 
 Backend env:
 
