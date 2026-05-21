@@ -13,7 +13,6 @@ func (c *BaseController) decodeJSON(v any, r *http.Request) error {
 	}
 
 	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
 	return decoder.Decode(v)
 }
 
