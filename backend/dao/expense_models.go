@@ -53,7 +53,7 @@ type ExpenseEntry struct {
 	CategoryID string     `gorm:"column:category_id;type:uuid;not null;index" json:"categoryId"`
 	Type       string     `gorm:"column:type;type:text;not null;check:type in ('expense','income')" json:"type"`
 	Amount     int        `gorm:"column:amount;not null;check:amount >= 0" json:"amount"`
-	Currency   string     `gorm:"column:currency;type:text;not null;default:'USD'" json:"currency"`
+	Currency   string     `gorm:"column:currency;type:text;not null;default:'SGD'" json:"currency"`
 	OccurredOn string     `gorm:"column:occurred_on;type:date;not null" json:"occurredOn"`
 	Merchant   string     `gorm:"column:merchant;type:text;not null" json:"merchant"`
 	Note       string     `gorm:"column:note;type:text;not null;default:''" json:"note"`

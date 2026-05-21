@@ -58,7 +58,15 @@ export const finance = {
 	syncStatus,
 
 	async init() {
-		financeState.set(await loadFinanceState());
+		const loaded = await loadFinanceState();
+		const normalizedEntries = loaded.entries.map((entry) =>
+			entry.currency === 'SGD' ? entry : { ...entry, currency: 'SGD', updatedAt: isoNow() }
+		);
+		financeState.set({ ...loaded, entries: normalizedEntries });
+
+		if (normalizedEntries.some((entry, index) => entry !== loaded.entries[index])) {
+			await Promise.all(normalizedEntries.map((entry) => putRecord('entries', entry)));
+		}
 	},
 
 	async addEntry(formData: FormData) {
@@ -89,7 +97,7 @@ export const finance = {
 			categoryId,
 			type,
 			amount: cents(formData.get('amount')),
-			currency: normalizeText(formData.get('currency'), 'USD').toUpperCase(),
+			currency: 'SGD',
 			occurredOn: normalizeText(formData.get('occurredOn'), todayInputValue()),
 			merchant: normalizeText(formData.get('merchant'), 'Untitled'),
 			note: normalizeText(formData.get('note')),
@@ -101,6 +109,50 @@ export const finance = {
 
 		await mutate('entries', 'entries', entry);
 		await upsertMerchantRecord(state, entry.merchant, entry.occurredOn);
+	},
+
+	async updateEntry(entryId: string, formData: FormData) {
+		const state = get(financeState);
+		if (!state) return;
+
+		const existing = state.entries.find((entry) => entry.id === entryId && !entry.deletedAt);
+		if (!existing) {
+			throw new Error('Transaction not found.');
+		}
+
+		const groupId = state.settings.activeGroupId;
+		const type = normalizeText(formData.get('type'), existing.type) as EntryType;
+		const categoryId = normalizeText(formData.get('categoryId'), existing.categoryId);
+		const category = state.categories.find((item) => {
+			if (item.id !== categoryId || item.groupId !== groupId || item.deletedAt) return false;
+			const scope = normalizeCategoryScope(item.scope);
+			if (scope === 'user' && item.ownerUserId && item.ownerUserId !== state.settings.deviceUserId) return false;
+			return true;
+		});
+
+		if (!category) {
+			throw new Error('Category not found for this household.');
+		}
+
+		const categoryType = normalizeCategoryType(category.type, category.name);
+		if (categoryType !== type) {
+			throw new Error(`Category "${category.name}" is ${categoryType}, but transaction is ${type}.`);
+		}
+
+		const next: LedgerEntry = touch({
+			...existing,
+			accountId: normalizeText(formData.get('accountId'), existing.accountId),
+			categoryId,
+			type,
+			amount: cents(formData.get('amount')),
+			currency: 'SGD',
+			occurredOn: normalizeText(formData.get('occurredOn'), existing.occurredOn),
+			merchant: normalizeText(formData.get('merchant'), existing.merchant),
+			note: normalizeText(formData.get('note'), existing.note)
+		});
+
+		await mutate('entries', 'entries', next);
+		await upsertMerchantRecord(state, next.merchant, next.occurredOn);
 	},
 
 	async addAccount(formData: FormData) {

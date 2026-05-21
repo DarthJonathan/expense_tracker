@@ -239,6 +239,60 @@ func (s *ExpenseService) ListCategories(ctx context.Context, groupID string, aut
 	return records, err
 }
 
+func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID string, req *request.CreateAutomationEntryRequest) (*dao.ExpenseEntry, error) {
+	trimmedUserID := strings.TrimSpace(authUserID)
+	if trimmedUserID == "" {
+		return nil, fmt.Errorf("unauthorized")
+	}
+
+	accountRef := strings.TrimSpace(req.AccountType)
+	if accountRef == "" {
+		return nil, fmt.Errorf("accountType is required")
+	}
+
+	merchant := strings.TrimSpace(req.Merchant)
+	if merchant == "" {
+		return nil, fmt.Errorf("merchant is required")
+	}
+
+	group, err := s.ResolveOrCreateUserGroup(ctx, trimmedUserID)
+	if err != nil {
+		return nil, err
+	}
+
+	account, err := s.findOrCreateAccountByRef(ctx, group.ID, accountRef)
+	if err != nil {
+		return nil, err
+	}
+
+	entryType := "expense"
+	amount := req.Amount
+	if amount < 0 {
+		amount = -amount
+	}
+
+	category, err := s.findOrCreateHouseholdCategoryByType(ctx, group.ID, trimmedUserID, entryType)
+	if err != nil {
+		return nil, err
+	}
+
+	occurredOn, err := normalizeCreatedAtDate(req.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.CreateExpense(ctx, group.ID, trimmedUserID, &request.CreateExpenseRequest{
+		AccountID:  account.ID,
+		CategoryID: category.ID,
+		Type:       entryType,
+		Amount:     amount,
+		Currency:   "SGD",
+		OccurredOn: occurredOn,
+		Merchant:   merchant,
+		Note:       "",
+	})
+}
+
 func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, createdByUserID string, req *request.CreateExpenseRequest) (*dao.ExpenseEntry, error) {
 	if strings.TrimSpace(req.AccountID) == "" {
 		return nil, fmt.Errorf("accountId is required")
@@ -318,6 +372,144 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 	}
 
 	return expense, nil
+}
+
+func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, transactionID string, authUserID string, req *request.UpdateExpenseRequest) (*dao.ExpenseEntry, error) {
+	trimmedTransactionID := strings.TrimSpace(transactionID)
+	if trimmedTransactionID == "" {
+		return nil, fmt.Errorf("transactionId is required")
+	}
+
+	current := &dao.ExpenseEntry{}
+	if err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+		select
+			id::text as id,
+			group_id::text as group_id,
+			account_id::text as account_id,
+			category_id::text as category_id,
+			type,
+			amount,
+			currency,
+			to_char(occurred_on, 'YYYY-MM-DD') as occurred_on,
+			merchant,
+			note,
+			created_by::text as created_by,
+			created_at,
+			updated_at,
+			deleted_at
+		from %s
+		where id = ?::uuid and group_id = ?::uuid and deleted_at is null
+		limit 1
+	`, dao.QualifiedTable("expense_entries")), trimmedTransactionID, groupID).Scan(current).Error; err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(current.ID) == "" {
+		return nil, fmt.Errorf("transaction not found")
+	}
+
+	next := *current
+
+	if req.AccountID != nil {
+		nextAccountID := strings.TrimSpace(*req.AccountID)
+		if nextAccountID == "" {
+			return nil, fmt.Errorf("accountId is required")
+		}
+		next.AccountID = nextAccountID
+	}
+
+	if req.CategoryID != nil {
+		nextCategoryID := strings.TrimSpace(*req.CategoryID)
+		if nextCategoryID == "" {
+			return nil, fmt.Errorf("categoryId is required")
+		}
+		next.CategoryID = nextCategoryID
+	}
+
+	if req.Type != nil {
+		nextType := strings.ToLower(strings.TrimSpace(*req.Type))
+		if nextType == "" {
+			nextType = "expense"
+		}
+		if nextType != "expense" && nextType != "income" {
+			return nil, fmt.Errorf("type must be expense or income")
+		}
+		next.Type = nextType
+	}
+
+	if req.Amount != nil {
+		if *req.Amount < 0 {
+			return nil, fmt.Errorf("amount must be >= 0")
+		}
+		next.Amount = *req.Amount
+	}
+
+	if req.Currency != nil {
+		currencyCode, err := normalizeCurrencyCode(*req.Currency)
+		if err != nil {
+			return nil, err
+		}
+		next.Currency = currencyCode
+	}
+
+	if req.OccurredOn != nil {
+		trimmedDate := strings.TrimSpace(*req.OccurredOn)
+		if trimmedDate != "" {
+			occurredOn, err := normalizeDate(trimmedDate)
+			if err != nil {
+				return nil, err
+			}
+			next.OccurredOn = occurredOn
+		}
+	}
+
+	if req.Merchant != nil {
+		merchant := strings.TrimSpace(*req.Merchant)
+		if merchant == "" {
+			return nil, fmt.Errorf("merchant is required")
+		}
+		next.Merchant = merchant
+	}
+
+	if req.Note != nil {
+		next.Note = strings.TrimSpace(*req.Note)
+	}
+
+	categoryMeta, err := s.findCategoryForUser(ctx, groupID, strings.TrimSpace(next.CategoryID), authUserID)
+	if err != nil {
+		return nil, err
+	}
+	if categoryMeta.Type != "" && categoryMeta.Type != next.Type {
+		return nil, fmt.Errorf("category type mismatch: category is %s but entry is %s", categoryMeta.Type, next.Type)
+	}
+
+	now := time.Now().UTC()
+	next.UpdatedAt = now
+
+	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Table((dao.ExpenseEntry{}).TableName()).
+			Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", trimmedTransactionID, groupID).
+			Updates(map[string]any{
+				"account_id":  next.AccountID,
+				"category_id": next.CategoryID,
+				"type":        next.Type,
+				"amount":      next.Amount,
+				"currency":    next.Currency,
+				"occurred_on": next.OccurredOn,
+				"merchant":    next.Merchant,
+				"note":        next.Note,
+				"updated_at":  next.UpdatedAt,
+			}).Error; err != nil {
+			return err
+		}
+
+		return upsertMerchant(tx, merchantFromEntry(groupID, next, now))
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &next, nil
 }
 
 func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *request.ListExpensesRequest) ([]dao.ExpenseEntry, error) {
@@ -463,20 +655,33 @@ func normalizeDate(value string) (string, error) {
 	return parsed.Format("2006-01-02"), nil
 }
 
-func normalizeCurrencyCode(value string) (string, error) {
-	code := strings.ToUpper(strings.TrimSpace(value))
-	if code == "" {
-		return "USD", nil
+func normalizeCreatedAtDate(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return time.Now().UTC().Format("2006-01-02"), nil
 	}
-	if len(code) != 3 {
-		return "", fmt.Errorf("currency must be a 3-letter code")
+
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02T15:04:05",
 	}
-	for _, char := range code {
-		if char < 'A' || char > 'Z' {
-			return "", fmt.Errorf("currency must be a 3-letter code")
+
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, trimmed); err == nil {
+			return parsed.UTC().Format("2006-01-02"), nil
 		}
 	}
-	return code, nil
+
+	return "", fmt.Errorf("createdAt must be RFC3339 or YYYY-MM-DD")
+}
+
+func normalizeCurrencyCode(value string) (string, error) {
+	_ = strings.TrimSpace(value)
+	return "SGD", nil
 }
 
 func normalizeIcon(value string, fallback string) string {
@@ -587,5 +792,117 @@ func normalizeCategoryScope(value string) string {
 		return "user"
 	default:
 		return "household"
+	}
+}
+
+func (s *ExpenseService) findOrCreateAccountByRef(ctx context.Context, groupID string, accountRef string) (*dao.ExpenseAccount, error) {
+	trimmedRef := strings.TrimSpace(accountRef)
+	if trimmedRef == "" {
+		return nil, fmt.Errorf("accountType is required")
+	}
+
+	refLower := strings.ToLower(trimmedRef)
+	account := &dao.ExpenseAccount{}
+	if err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+		select
+			id::text as id,
+			group_id::text as group_id,
+			name,
+			type,
+			opening_balance,
+			color,
+			icon,
+			created_at,
+			updated_at,
+			deleted_at
+		from %s
+		where group_id = ?::uuid and deleted_at is null and (lower(name) = ? or lower(type) = ?)
+		order by updated_at desc
+		limit 1
+	`, dao.QualifiedTable("expense_accounts")), groupID, refLower, refLower).Scan(account).Error; err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(account.ID) != "" {
+		return account, nil
+	}
+
+	derivedType := normalizeAccountTypeFromRef(trimmedRef)
+	created, err := s.CreateAccount(ctx, groupID, &request.CreateAccountRequest{
+		Name:           trimmedRef,
+		Type:           derivedType,
+		OpeningBalance: 0,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func (s *ExpenseService) findOrCreateHouseholdCategoryByType(ctx context.Context, groupID string, authUserID string, entryType string) (*dao.ExpenseCategory, error) {
+	normalizedType := normalizeCategoryType(entryType, "")
+
+	category := &dao.ExpenseCategory{}
+	if err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+		select
+			id::text as id,
+			group_id::text as group_id,
+			name,
+			type,
+			scope,
+			owner_user_id::text as owner_user_id,
+			color,
+			icon,
+			monthly_target,
+			created_at,
+			updated_at,
+			deleted_at
+		from %s
+		where group_id = ?::uuid and type = ? and scope = 'household' and deleted_at is null
+		order by updated_at desc
+		limit 1
+	`, dao.QualifiedTable("expense_categories")), groupID, normalizedType).Scan(category).Error; err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(category.ID) != "" {
+		return category, nil
+	}
+
+	categoryName := "Other expense"
+	if normalizedType == "income" {
+		categoryName = "Income"
+	}
+
+	created, err := s.CreateCategory(ctx, groupID, authUserID, &request.CreateCategoryRequest{
+		Name:          categoryName,
+		Type:          normalizedType,
+		Scope:         "household",
+		MonthlyTarget: 0,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return created, nil
+}
+
+func normalizeAccountTypeFromRef(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "cash", "bank", "card", "wallet":
+		return normalized
+	}
+
+	switch {
+	case strings.Contains(normalized, "cash"):
+		return "cash"
+	case strings.Contains(normalized, "card"), strings.Contains(normalized, "visa"), strings.Contains(normalized, "master"), strings.Contains(normalized, "amex"):
+		return "card"
+	case strings.Contains(normalized, "bank"):
+		return "bank"
+	default:
+		return "wallet"
 	}
 }

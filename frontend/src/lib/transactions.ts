@@ -34,3 +34,47 @@ export async function searchTransactionsRemote(params: {
 
 	return payload.data ?? [];
 }
+
+interface ExpensePayload {
+	success: boolean;
+	error?: string;
+	data?: LedgerEntry;
+}
+
+export async function updateTransactionRemote(params: {
+	groupId: string;
+	transactionId: string;
+	accountId: string;
+	categoryId: string;
+	type: EntryType;
+	amount: number;
+	currency: string;
+	occurredOn: string;
+	merchant: string;
+	note: string;
+}): Promise<LedgerEntry> {
+	const response = await authFetch(
+		apiPath(`/api/v1/groups/${params.groupId}/transactions/${params.transactionId}`),
+		{
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				accountId: params.accountId,
+				categoryId: params.categoryId,
+				type: params.type,
+				amount: params.amount,
+				currency: params.currency,
+				occurredOn: params.occurredOn,
+				merchant: params.merchant,
+				note: params.note
+			})
+		}
+	);
+
+	const payload = (await response.json()) as ExpensePayload;
+	if (!response.ok || !payload.success || !payload.data) {
+		throw new Error(payload.error || `Update failed (${response.status})`);
+	}
+
+	return payload.data;
+}

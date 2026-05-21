@@ -155,8 +155,52 @@ form {
 	scrollbar-width: none;
 }
 
+.pull-refresh-screen {
+	position: relative;
+	transform: translateY(var(--pull-offset, 0px));
+	transition: transform 220ms ease;
+	will-change: transform;
+}
+
+.pull-refresh-indicator {
+	align-items: center;
+	color: var(--muted, #596175);
+	display: inline-flex;
+	font-size: 0.76rem;
+	font-weight: 800;
+	gap: 0.4rem;
+	left: 50%;
+	opacity: 0;
+	pointer-events: none;
+	position: sticky;
+	top: 0.35rem;
+	transform: translate(-50%, -0.5rem);
+	transition:
+		opacity 140ms ease,
+		transform 140ms ease;
+	z-index: 20;
+}
+
+.pull-refresh-indicator.visible {
+	opacity: 1;
+	transform: translate(-50%, 0);
+}
+
+.pull-refresh-indicator .spinning {
+	animation: spin 0.9s linear infinite;
+}
+
 .screen::-webkit-scrollbar {
 	display: none;
+}
+
+@keyframes spin {
+	from {
+		transform: rotate(0deg);
+	}
+	to {
+		transform: rotate(360deg);
+	}
 }
 
 .hero-header,
@@ -1572,6 +1616,14 @@ body {
 	display: grid;
 	margin-bottom: 1rem;
 	padding: 0.4rem 1rem;
+}
+
+.transaction-edit-form {
+	margin-bottom: 1rem;
+}
+
+.transaction-detail-actions {
+	margin: 0.4rem 0 0.8rem;
 }
 
 .transaction-detail-row {

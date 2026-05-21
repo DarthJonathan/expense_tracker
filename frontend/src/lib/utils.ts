@@ -27,7 +27,7 @@ export function cents(value: FormDataEntryValue | number | string | null | undef
 export function currency(amountInCents: number): string {
 	return new Intl.NumberFormat(undefined, {
 		style: 'currency',
-		currency: 'USD'
+		currency: 'SGD'
 	}).format(amountInCents / 100);
 }
 

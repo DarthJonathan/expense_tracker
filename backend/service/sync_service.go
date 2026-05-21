@@ -628,14 +628,6 @@ func normalizeMerchantName(value string) string {
 }
 
 func normalizeEntryCurrency(value string) string {
-	code := strings.ToUpper(strings.TrimSpace(value))
-	if len(code) != 3 {
-		return "USD"
-	}
-	for _, char := range code {
-		if char < 'A' || char > 'Z' {
-			return "USD"
-		}
-	}
-	return code
+	_ = strings.TrimSpace(value)
+	return "SGD"
 }

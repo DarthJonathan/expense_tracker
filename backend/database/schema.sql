@@ -56,7 +56,7 @@ create table if not exists spendit.expense_entries (
 	category_id uuid not null references spendit.expense_categories(id) on delete restrict,
 	type text not null check (type in ('expense', 'income')),
 	amount integer not null check (amount >= 0),
-	currency text not null default 'USD',
+	currency text not null default 'SGD',
 	occurred_on date not null,
 	merchant text not null,
 	note text not null default '',

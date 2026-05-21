@@ -123,6 +123,9 @@ func Migrate(db *gorm.DB) error {
 			on %s (group_id, account_id, occurred_on desc)
 			where deleted_at is null`,
 			tables["entries"]),
+		`update ` + tables["entries"] + `
+			set currency = 'SGD'
+			where coalesce(currency, '') <> 'SGD'`,
 	}
 
 	for _, statement := range indexes {

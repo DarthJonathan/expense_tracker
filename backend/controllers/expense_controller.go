@@ -261,6 +261,38 @@ func (c *ExpenseController) CreateEntryV1(w http.ResponseWriter, r *http.Request
 	})
 }
 
+func (c *ExpenseController) CreateAutomationEntryV1(w http.ResponseWriter, r *http.Request) {
+	req := &request.CreateAutomationEntryRequest{}
+	if err := c.decodeJSON(req, r); err != nil {
+		c.writeJSON(w, http.StatusBadRequest, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "invalid request body"},
+		})
+		return
+	}
+
+	authUserID, _ := r.Context().Value(constants.AuthUserIDCtx).(string)
+	authUserID = strings.TrimSpace(authUserID)
+	if authUserID == "" {
+		c.writeJSON(w, http.StatusUnauthorized, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "unauthorized"},
+		})
+		return
+	}
+
+	record, err := c.Service.CreateAutomationEntry(r.Context(), authUserID, req)
+	if err != nil {
+		c.writeJSON(w, errorStatus(err), response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: err.Error()},
+		})
+		return
+	}
+
+	c.writeJSON(w, http.StatusCreated, response.ExpenseResponse{
+		BaseResponse: response.BaseResponse{Success: true},
+		Data:         record,
+	})
+}
+
 func (c *ExpenseController) ListExpensesV1(w http.ResponseWriter, r *http.Request) {
 	groupID := strings.TrimSpace(mux.Vars(r)["groupId"])
 	if groupID == "" {
@@ -306,6 +338,54 @@ func (c *ExpenseController) ListExpensesV1(w http.ResponseWriter, r *http.Reques
 	c.writeJSON(w, http.StatusOK, response.ExpenseListResponse{
 		BaseResponse: response.BaseResponse{Success: true},
 		Data:         records,
+	})
+}
+
+func (c *ExpenseController) UpdateExpenseV1(w http.ResponseWriter, r *http.Request) {
+	groupID := strings.TrimSpace(mux.Vars(r)["groupId"])
+	if groupID == "" {
+		c.writeJSON(w, http.StatusBadRequest, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "groupId is required"},
+		})
+		return
+	}
+
+	transactionID := strings.TrimSpace(mux.Vars(r)["transactionId"])
+	if transactionID == "" {
+		c.writeJSON(w, http.StatusBadRequest, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "transactionId is required"},
+		})
+		return
+	}
+
+	req := &request.UpdateExpenseRequest{}
+	if err := c.decodeJSON(req, r); err != nil {
+		c.writeJSON(w, http.StatusBadRequest, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "invalid request body"},
+		})
+		return
+	}
+
+	authUserID, _ := r.Context().Value(constants.AuthUserIDCtx).(string)
+	authUserID = strings.TrimSpace(authUserID)
+	if authUserID == "" {
+		c.writeJSON(w, http.StatusUnauthorized, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "unauthorized"},
+		})
+		return
+	}
+
+	record, err := c.Service.UpdateExpense(r.Context(), groupID, transactionID, authUserID, req)
+	if err != nil {
+		c.writeJSON(w, errorStatus(err), response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: err.Error()},
+		})
+		return
+	}
+
+	c.writeJSON(w, http.StatusOK, response.ExpenseResponse{
+		BaseResponse: response.BaseResponse{Success: true},
+		Data:         record,
 	})
 }
 

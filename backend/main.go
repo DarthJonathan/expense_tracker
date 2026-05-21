@@ -59,7 +59,7 @@ func RunServer() error {
 func initHTTPServer(servingPort string, allowOrigin string, router *mux.Router) error {
 	headersOk := handlers.AllowedHeaders([]string{"X-Requested-With", "Content-Type", "Authorization", "X-API-Key", "X-Request-Id"})
 	originsOk := handlers.AllowedOrigins([]string{allowOrigin})
-	methodsOk := handlers.AllowedMethods([]string{"GET", "HEAD", "POST", "PUT", "OPTIONS"})
+	methodsOk := handlers.AllowedMethods([]string{"GET", "HEAD", "POST", "PUT", "PATCH", "OPTIONS"})
 	allowCreds := handlers.AllowCredentials()
 
 	log.WithFields(log.Fields{"port": servingPort, "cors": allowOrigin}).Info("HTTP server started")
@@ -110,8 +110,11 @@ func initRouter(db *gorm.DB) *mux.Router {
 	protected.HandleFunc("/groups/{groupId}/expenses", expenseController.ListExpensesV1).Methods(http.MethodGet)
 	protected.HandleFunc("/groups/{groupId}/expenses", expenseController.CreateExpenseV1).Methods(http.MethodPost, http.MethodOptions)
 	protected.HandleFunc("/entries", expenseController.CreateEntryV1).Methods(http.MethodPost, http.MethodOptions)
+	protected.HandleFunc("/entries/automation", expenseController.CreateAutomationEntryV1).Methods(http.MethodPost, http.MethodOptions)
+	protected.HandleFunc("/entries/apple", expenseController.CreateAutomationEntryV1).Methods(http.MethodPost, http.MethodOptions)
 	protected.HandleFunc("/groups/{groupId}/transactions", expenseController.ListExpensesV1).Methods(http.MethodGet)
 	protected.HandleFunc("/groups/{groupId}/transactions", expenseController.CreateExpenseV1).Methods(http.MethodPost, http.MethodOptions)
+	protected.HandleFunc("/groups/{groupId}/transactions/{transactionId}", expenseController.UpdateExpenseV1).Methods(http.MethodPut, http.MethodPatch, http.MethodOptions)
 	protected.HandleFunc("/groups/{groupId}/adjustments", expenseController.ListAdjustmentsV1).Methods(http.MethodGet)
 	protected.HandleFunc("/groups/{groupId}/adjustments", expenseController.CreateAdjustmentV1).Methods(http.MethodPost, http.MethodOptions)
 	router.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)

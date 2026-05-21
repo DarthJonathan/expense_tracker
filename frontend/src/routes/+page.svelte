@@ -24,9 +24,9 @@
 	import { finance } from '$lib/finance';
 	import { clearSession, generateApiKey, getStoredSession, login, register, type APIKeyData, type AuthSession } from '$lib/auth';
 	import { patchSettings } from '$lib/db';
-	import { searchTransactionsRemote } from '$lib/transactions';
+	import { searchTransactionsRemote, updateTransactionRemote } from '$lib/transactions';
 	import type { CategoryScope, CategoryType, LedgerEntry, PeriodCategoryTotal, PeriodGrain } from '$lib/types';
-	import { currency, formatSignedCurrency, isActive, todayInputValue } from '$lib/utils';
+	import { cents, currency, formatSignedCurrency, isActive, todayInputValue } from '$lib/utils';
 
 	type Screen = 'home' | 'review' | 'add' | 'transactions' | 'search' | 'transactionDetail' | 'settings';
 	type DesktopScreen = 'dashboard' | 'transactions' | 'accounts' | 'review' | 'settings' | 'add';
@@ -68,6 +68,14 @@
 	let selectedDate: DateValue = parseDate(todayInputValue());
 	let selectedAccountId = '';
 	let selectedCategoryId = '';
+	let transactionEditMode = false;
+	let transactionEditType: 'expense' | 'income' = 'expense';
+	let transactionEditAccountId = '';
+	let transactionEditCategoryId = '';
+	let transactionEditAmount = '';
+	let transactionEditDate = todayInputValue();
+	let transactionEditMerchant = '';
+	let transactionEditNote = '';
 	let isOnline = true;
 	let merchantQuery = '';
 	let merchantSuggestions: string[] = [];
@@ -99,6 +107,15 @@
 	let selectedSettingsAccountType: 'cash' | 'bank' | 'card' | 'wallet' = 'bank';
 	let selectedSettingsCategoryType: CategoryType = 'expense';
 	let selectedSettingsCategoryScope: CategoryScope = 'household';
+	let homeScreenEl: HTMLElement | null = null;
+	let transactionsScreenEl: HTMLElement | null = null;
+	let pullRefreshing = false;
+	let pullRefreshScreen: 'home' | 'transactions' | null = null;
+	let pullDistance = 0;
+	let pullStartY = 0;
+	let pullTracking = false;
+	const pullTriggerDistance = 68;
+	const pullMaxDistance = 104;
 	const entryTypeOptions: SelectOption[] = [
 		{ value: 'expense', label: 'Expense' },
 		{ value: 'income', label: 'Income' }
@@ -154,6 +171,10 @@
 		value: category.id,
 		label: `${category.name} (${categoryScopeLabel(category.scope)})`
 	}));
+	$: transactionEditCategoryOptions = getEntryCategoryOptions(categories, transactionEditType).map((category) => ({
+		value: category.id,
+		label: `${category.name} (${categoryScopeLabel(category.scope)})`
+	}));
 	$: settingsCategoryOptions = categories.map((category) => ({
 		value: category.id,
 		label: `${category.name} (${categoryScopeLabel(category.scope)})`
@@ -177,6 +198,13 @@
 			selectedCategoryId = '';
 		} else if (!addCategoryOptions.some((category) => category.id === selectedCategoryId)) {
 			selectedCategoryId = addCategoryOptions[0].id;
+		}
+	}
+	$: {
+		if (transactionEditCategoryOptions.length === 0) {
+			transactionEditCategoryId = '';
+		} else if (!transactionEditCategoryOptions.some((category) => category.value === transactionEditCategoryId)) {
+			transactionEditCategoryId = transactionEditCategoryOptions[0].value;
 		}
 	}
 	$: entries = state?.entries.filter((entry) => entry.groupId === state.settings.activeGroupId && isActive(entry)) ?? [];
@@ -296,6 +324,7 @@
 				authMode = 'register';
 			}
 			authSession = getStoredSession();
+			isOnline = navigator.onLine;
 			const storedTheme = window.localStorage.getItem('spendit-theme');
 			if (storedTheme === 'dark' || storedTheme === 'light') {
 				themeMode = storedTheme;
@@ -304,8 +333,10 @@
 			if (authSession?.user?.id) {
 				await patchSettings({ deviceUserId: authSession.user.id });
 				await finance.init();
+				if (isOnline) {
+					await finance.syncNow();
+				}
 			}
-			isOnline = navigator.onLine;
 		})();
 
 		window.addEventListener('online', syncWhenOnline);
@@ -331,6 +362,90 @@
 		if (navigator.onLine) {
 			void finance.syncNow();
 		}
+	}
+
+	function handlePullStart(screen: 'home' | 'transactions', event: TouchEvent): void {
+		if (pullRefreshing || activeScreen !== screen) return;
+		const container = screen === 'home' ? homeScreenEl : transactionsScreenEl;
+		if (!container || container.scrollTop > 0) return;
+		const touch = event.touches[0];
+		if (!touch) return;
+		pullTracking = true;
+		pullRefreshScreen = screen;
+		pullStartY = touch.clientY;
+		pullDistance = 0;
+	}
+
+	function handlePullMove(screen: 'home' | 'transactions', event: TouchEvent): void {
+		if (!pullTracking || pullRefreshScreen !== screen || pullRefreshing || activeScreen !== screen) return;
+		const container = screen === 'home' ? homeScreenEl : transactionsScreenEl;
+		const touch = event.touches[0];
+		if (!container || !touch) return;
+		if (container.scrollTop > 0) {
+			cancelPullTracking();
+			return;
+		}
+
+		const delta = touch.clientY - pullStartY;
+		if (delta <= 0) {
+			pullDistance = 0;
+			return;
+		}
+
+		pullDistance = Math.min(pullMaxDistance, delta * 0.45);
+	}
+
+	function handlePullEnd(screen: 'home' | 'transactions'): void {
+		if (!pullTracking || pullRefreshScreen !== screen || pullRefreshing || activeScreen !== screen) {
+			cancelPullTracking();
+			return;
+		}
+		const shouldRefresh = pullDistance >= pullTriggerDistance;
+		cancelPullTracking();
+		if (shouldRefresh) {
+			void pullToRefresh(screen);
+		}
+	}
+
+	function cancelPullTracking(): void {
+		pullTracking = false;
+		pullRefreshScreen = null;
+		pullDistance = 0;
+	}
+
+	async function pullToRefresh(screen: 'home' | 'transactions'): Promise<void> {
+		if (pullRefreshing) return;
+		pullRefreshing = true;
+		pullRefreshScreen = screen;
+		pullDistance = pullTriggerDistance;
+
+		try {
+			await refreshFromBackend(screen);
+		} finally {
+			setTimeout(() => {
+				pullRefreshing = false;
+				pullRefreshScreen = null;
+				pullDistance = 0;
+			}, 180);
+		}
+	}
+
+	async function refreshFromBackend(screen: 'home' | 'transactions'): Promise<void> {
+		if (!isOnline) {
+			showFeedback('error', 'Offline', 'You are offline. Showing local data.');
+			return;
+		}
+		if (!authSession) {
+			showFeedback('error', 'Not signed in', 'Login to sync with backend.');
+			return;
+		}
+
+		const synced = await finance.syncNow();
+		if (!synced) {
+			showFeedback('error', 'Sync failed', 'Could not refresh from backend.');
+			return;
+		}
+		showFeedback('success', 'Refreshed', 'Latest data loaded from backend.');
 	}
 
 	async function submitMovement(event: SubmitEvent, view: 'mobile' | 'desktop') {
@@ -521,7 +636,66 @@
 	function openTransactionDetail(entryId: string, fallback?: LedgerEntry): void {
 		selectedTransactionId = entryId;
 		selectedTransactionFallback = fallback ?? null;
+		transactionEditMode = false;
 		activeScreen = 'transactionDetail';
+	}
+
+	function openTransactionEditor(): void {
+		if (!selectedTransaction) return;
+		transactionEditMode = true;
+		transactionEditType = selectedTransaction.type;
+		transactionEditAccountId = selectedTransaction.accountId;
+		transactionEditCategoryId = selectedTransaction.categoryId;
+		transactionEditAmount = amountFromCents(selectedTransaction.amount);
+		transactionEditDate = selectedTransaction.occurredOn;
+		transactionEditMerchant = selectedTransaction.merchant;
+		transactionEditNote = selectedTransaction.note;
+	}
+
+	function closeTransactionEditor(): void {
+		transactionEditMode = false;
+	}
+
+	async function submitTransactionUpdate(event: SubmitEvent): Promise<void> {
+		if (!selectedTransaction) return;
+		const form = event.currentTarget as HTMLFormElement;
+		const formData = new FormData(form);
+		formData.set('currency', 'SGD');
+		try {
+			await finance.updateEntry(selectedTransaction.id, formData);
+			transactionEditMode = false;
+			if (navigator.onLine && authSession && state) {
+				await updateTransactionRemote({
+					groupId: state.settings.activeGroupId,
+					transactionId: selectedTransaction.id,
+					accountId: `${formData.get('accountId') ?? ''}`.trim(),
+					categoryId: `${formData.get('categoryId') ?? ''}`.trim(),
+					type: (`${formData.get('type') ?? 'expense'}`.trim().toLowerCase() === 'income' ? 'income' : 'expense') as
+						| 'expense'
+						| 'income',
+					amount: cents(formData.get('amount')),
+					currency: 'SGD',
+					occurredOn: `${formData.get('occurredOn') ?? todayInputValue()}`.trim(),
+					merchant: `${formData.get('merchant') ?? ''}`.trim(),
+					note: `${formData.get('note') ?? ''}`.trim()
+				});
+			}
+			let synced = false;
+			if (navigator.onLine) {
+				synced = await finance.syncNow();
+			}
+			if (!navigator.onLine) {
+				showFeedback('success', 'Saved', 'Transaction updated locally. It will sync when online.');
+				return;
+			}
+			if (!synced) {
+				showFeedback('error', 'Saved locally', 'Transaction updated, but backend sync failed.');
+				return;
+			}
+			showFeedback('success', 'Updated', 'Transaction updated successfully.');
+		} catch (error) {
+			showFeedback('error', 'Failed', error instanceof Error ? error.message : 'Unable to update transaction.');
+		}
 	}
 
 	function scheduleRemoteTransactionSearch(): void {
@@ -595,6 +769,10 @@
 
 	function formatDate(value: string): string {
 		return new Intl.DateTimeFormat(undefined, { day: '2-digit', month: 'short' }).format(new Date(`${value}T00:00:00`));
+	}
+
+	function amountFromCents(value: number): string {
+		return (Math.max(0, value) / 100).toFixed(2);
 	}
 
 	function displayColor(color: string | undefined, index: number): string {
@@ -1086,7 +1264,19 @@ function getEntryCategoryOptions(
 
 <main class="phone-app">
 	{#if activeScreen === 'home'}
-		<section class="screen home-screen">
+		<section
+			bind:this={homeScreenEl}
+			class="screen home-screen pull-refresh-screen"
+			style={`--pull-offset:${pullRefreshScreen === 'home' ? `${pullDistance}px` : '0px'}`}
+			on:touchstart|passive={(event) => handlePullStart('home', event)}
+			on:touchmove|passive={(event) => handlePullMove('home', event)}
+			on:touchend={() => handlePullEnd('home')}
+			on:touchcancel={() => handlePullEnd('home')}
+		>
+			<div class="pull-refresh-indicator" class:visible={pullRefreshScreen === 'home' && (pullDistance > 0 || pullRefreshing)}>
+				<RefreshCw size={14} class={pullRefreshing ? 'spinning' : ''} />
+				<span>{pullRefreshing ? 'Refreshing...' : 'Pull to refresh'}</span>
+			</div>
 			<header class="hero-header">
 				<div>
 					<p>Hello,</p>
@@ -1420,7 +1610,19 @@ function getEntryCategoryOptions(
 			</form>
 		</section>
 	{:else if activeScreen === 'transactions'}
-			<section class="screen">
+			<section
+				bind:this={transactionsScreenEl}
+				class="screen pull-refresh-screen"
+				style={`--pull-offset:${pullRefreshScreen === 'transactions' ? `${pullDistance}px` : '0px'}`}
+				on:touchstart|passive={(event) => handlePullStart('transactions', event)}
+				on:touchmove|passive={(event) => handlePullMove('transactions', event)}
+				on:touchend={() => handlePullEnd('transactions')}
+				on:touchcancel={() => handlePullEnd('transactions')}
+			>
+				<div class="pull-refresh-indicator" class:visible={pullRefreshScreen === 'transactions' && (pullDistance > 0 || pullRefreshing)}>
+					<RefreshCw size={14} class={pullRefreshing ? 'spinning' : ''} />
+					<span>{pullRefreshing ? 'Refreshing...' : 'Pull to refresh'}</span>
+				</div>
 				<header class="screen-header">
 					<span class="header-spacer"></span>
 					<h1>Transactions</h1>
@@ -1510,42 +1712,103 @@ function getEntryCategoryOptions(
 					<button class="plain-icon-button" title="Close" type="button" on:click={() => (activeScreen = 'transactions')}>×</button>
 				</header>
 			{#if selectedTransaction}
-				<section class="transaction-detail-card">
-					<div class="transaction-detail-row">
-						<span>Merchant</span>
-						<strong>{selectedTransaction.merchant}</strong>
-					</div>
-					<div class="transaction-detail-row">
-						<span>Type</span>
-						<strong>{selectedTransaction.type === 'expense' ? 'Expense' : 'Income'}</strong>
-					</div>
-					<div class="transaction-detail-row">
-						<span>Amount</span>
-						<strong class:negative={selectedTransaction.type === 'expense'}>
-							{selectedTransaction.type === 'expense' ? '-' : '+'}{currency(selectedTransaction.amount)}
-						</strong>
-					</div>
-					<div class="transaction-detail-row">
-						<span>Currency</span>
-						<strong>{selectedTransaction.currency}</strong>
-					</div>
-					<div class="transaction-detail-row">
-						<span>Date</span>
-						<strong>{formatDate(selectedTransaction.occurredOn)}</strong>
-					</div>
-					<div class="transaction-detail-row">
-						<span>Category</span>
-						<strong>{categoryName(selectedTransaction.categoryId)}</strong>
-					</div>
-					<div class="transaction-detail-row">
-						<span>Account</span>
-						<strong>{accountName(selectedTransaction.accountId)}</strong>
-					</div>
-					<div class="transaction-detail-row">
-						<span>Note</span>
-						<strong>{selectedTransaction.note || '-'}</strong>
-					</div>
-				</section>
+				{#if transactionEditMode}
+					<form class="form-card transaction-edit-form" on:submit|preventDefault={submitTransactionUpdate}>
+						<div class="field-grid">
+							<label>
+								Type
+								<AppSelect ariaLabel="Entry type" bind:value={transactionEditType} name="type" options={entryTypeOptions} required />
+							</label>
+							<label>
+								Amount
+								<input bind:value={transactionEditAmount} name="amount" type="text" inputmode="decimal" on:input={formatAmountInput} required />
+							</label>
+						</div>
+						<label>
+							Merchant
+							<input bind:value={transactionEditMerchant} name="merchant" required />
+						</label>
+						<div class="field-grid">
+							<label>
+								Account
+								<AppSelect
+									ariaLabel="Account"
+									bind:value={transactionEditAccountId}
+									disabled={accountSelectOptions.length === 0}
+									name="accountId"
+									options={accountSelectOptions}
+									required
+								/>
+							</label>
+							<label>
+								Category
+								<AppSelect
+									ariaLabel="Category"
+									bind:value={transactionEditCategoryId}
+									disabled={transactionEditCategoryOptions.length === 0}
+									name="categoryId"
+									options={transactionEditCategoryOptions}
+									required
+								/>
+							</label>
+						</div>
+						<div class="field-grid">
+							<label>
+								Date
+								<input bind:value={transactionEditDate} name="occurredOn" type="date" required />
+							</label>
+							<label>
+								Note
+								<input bind:value={transactionEditNote} name="note" placeholder="Optional" />
+							</label>
+						</div>
+						<input name="currency" type="hidden" value="SGD" />
+						<div class="button-row">
+							<button type="submit">Save changes</button>
+							<button class="ghost" type="button" on:click={closeTransactionEditor}>Cancel</button>
+						</div>
+					</form>
+				{:else}
+					<section class="transaction-detail-card">
+						<div class="transaction-detail-row">
+							<span>Merchant</span>
+							<strong>{selectedTransaction.merchant}</strong>
+						</div>
+						<div class="transaction-detail-row">
+							<span>Type</span>
+							<strong>{selectedTransaction.type === 'expense' ? 'Expense' : 'Income'}</strong>
+						</div>
+						<div class="transaction-detail-row">
+							<span>Amount</span>
+							<strong class:negative={selectedTransaction.type === 'expense'}>
+								{selectedTransaction.type === 'expense' ? '-' : '+'}{currency(selectedTransaction.amount)}
+							</strong>
+						</div>
+						<div class="transaction-detail-row">
+							<span>Currency</span>
+							<strong>SGD</strong>
+						</div>
+						<div class="transaction-detail-row">
+							<span>Date</span>
+							<strong>{formatDate(selectedTransaction.occurredOn)}</strong>
+						</div>
+						<div class="transaction-detail-row">
+							<span>Category</span>
+							<strong>{categoryName(selectedTransaction.categoryId)}</strong>
+						</div>
+						<div class="transaction-detail-row">
+							<span>Account</span>
+							<strong>{accountName(selectedTransaction.accountId)}</strong>
+						</div>
+						<div class="transaction-detail-row">
+							<span>Note</span>
+							<strong>{selectedTransaction.note || '-'}</strong>
+						</div>
+						<div class="button-row transaction-detail-actions">
+							<button type="button" on:click={openTransactionEditor}>Edit transaction</button>
+						</div>
+					</section>
+				{/if}
 			{:else}
 				<p class="empty-card">Transaction not found.</p>
 			{/if}

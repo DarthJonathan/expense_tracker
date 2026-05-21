@@ -33,6 +33,17 @@ type CreateExpenseRequest struct {
 	Note       string `json:"note"`
 }
 
+type UpdateExpenseRequest struct {
+	AccountID  *string `json:"accountId,omitempty"`
+	CategoryID *string `json:"categoryId,omitempty"`
+	Type       *string `json:"type,omitempty"`
+	Amount     *int    `json:"amount,omitempty"`
+	Currency   *string `json:"currency,omitempty"`
+	OccurredOn *string `json:"occurredOn,omitempty"`
+	Merchant   *string `json:"merchant,omitempty"`
+	Note       *string `json:"note,omitempty"`
+}
+
 type CreateEntryRequest struct {
 	AccountID  string `json:"accountId"`
 	CategoryID string `json:"categoryId"`
@@ -42,6 +53,13 @@ type CreateEntryRequest struct {
 	OccurredOn string `json:"occurredOn"`
 	Merchant   string `json:"merchant"`
 	Note       string `json:"note"`
+}
+
+type CreateAutomationEntryRequest struct {
+	CreatedAt   string `json:"createdAt"`
+	AccountType string `json:"accountType"`
+	Merchant    string `json:"merchant"`
+	Amount      int    `json:"amount"`
 }
 
 type ListExpensesRequest struct {
