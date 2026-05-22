@@ -41,6 +41,21 @@ func Migrate(db *gorm.DB) error {
 
 	indexes := []string{
 		fmt.Sprintf(`alter table %s
+			add column if not exists group_id uuid references %s(id) on delete set null`,
+			dao.QualifiedTable("expense_users"),
+			dao.QualifiedTable("expense_groups")),
+		fmt.Sprintf(`update %s u
+			set group_id = g.id
+			from (
+				select distinct on (created_by) created_by, id
+				from %s
+				where created_by is not null and deleted_at is null
+				order by created_by, updated_at desc
+			) g
+			where u.group_id is null and u.id = g.created_by`,
+			dao.QualifiedTable("expense_users"),
+			dao.QualifiedTable("expense_groups")),
+		fmt.Sprintf(`alter table %s
 			add column if not exists type text not null default 'expense'`,
 			tables["categories"]),
 		fmt.Sprintf(`alter table %s

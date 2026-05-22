@@ -1152,11 +1152,15 @@ function getEntryCategoryOptions(
 		const email = String(data.get('email') ?? '').trim();
 		const password = String(data.get('password') ?? '');
 		const displayName = String(data.get('displayName') ?? '').trim();
+		const inviteCode = String(data.get('inviteCode') ?? '').trim();
 
 		authLoading = true;
 		authError = '';
 		try {
-			authSession = authMode === 'register' ? await register(email, password, displayName) : await login(email, password);
+			authSession =
+				authMode === 'register'
+					? await register(email, password, displayName, inviteCode)
+					: await login(email, password);
 			await patchSettings({ deviceUserId: authSession.user.id });
 			await finance.init();
 			if (navigator.onLine) {
@@ -1242,6 +1246,7 @@ function getEntryCategoryOptions(
 				<input name="password" type="password" placeholder="Password" minlength="8" required />
 				{#if authMode === 'register'}
 					<input name="displayName" placeholder="Display name" />
+					<input name="inviteCode" placeholder="Invite code (optional)" />
 				{/if}
 				{#if authError}
 					<small class="auth-error">{authError}</small>

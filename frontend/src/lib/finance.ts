@@ -290,7 +290,10 @@ export const finance = {
 		try {
 			syncStatus.set({ state: 'syncing', message: 'Syncing with backend API...' });
 			const synced = await syncFinanceState(state);
-			await patchSettings({ lastSyncedAt: synced.settings.lastSyncedAt });
+			await patchSettings({
+				activeGroupId: synced.settings.activeGroupId,
+				lastSyncedAt: synced.settings.lastSyncedAt
+			});
 			financeState.set(synced);
 			syncStatus.set({ state: 'idle', message: 'Synced' });
 			return true;

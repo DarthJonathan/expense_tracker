@@ -20,60 +20,70 @@ type SyncService struct {
 	DB *gorm.DB
 }
 
+type userGroupResolution struct {
+	GroupID        string
+	HadStoredGroup bool
+}
+
 func NewSyncService(db *gorm.DB) *SyncService {
 	return &SyncService{DB: db}
 }
 
 func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.SyncRequest) (*response.SyncData, error) {
-	groupID := req.Settings.ActiveGroupID
-	if groupID == "" {
-		return nil, errors.New("settings.activeGroupId is required")
-	}
+	clientGroupID := strings.TrimSpace(req.Settings.ActiveGroupID)
 	authUserID = strings.TrimSpace(authUserID)
 	if authUserID == "" {
 		return nil, errors.New("authenticated user is required")
 	}
 
 	now := time.Now().UTC()
-	group := activeGroup(req.Groups, groupID, req.Settings.DeviceUserID, now)
 	result := &response.SyncData{}
 
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := upsertGroup(tx, group); err != nil {
-			return fmt.Errorf("upsert group: %w", err)
+		resolution, err := s.resolveUserGroup(tx, authUserID, clientGroupID, req.Settings.DeviceUserID, req.Groups, now)
+		if err != nil {
+			return fmt.Errorf("resolve user group: %w", err)
 		}
-
-		for _, account := range filterAccountsByGroup(req.Accounts, groupID) {
-			if err := upsertAccount(tx, account); err != nil {
-				return fmt.Errorf("upsert account %s: %w", account.ID, err)
-			}
+		groupID := resolution.GroupID
+		sourceGroupID := clientGroupID
+		if sourceGroupID == "" {
+			sourceGroupID = groupID
 		}
+		acceptIncoming := !(resolution.HadStoredGroup && sourceGroupID != groupID)
 
-		for _, category := range filterCategoriesByGroup(req.Categories, groupID, authUserID) {
-			if err := upsertCategory(tx, category); err != nil {
-				return fmt.Errorf("upsert category %s: %w", category.ID, err)
-			}
-		}
-
-		for _, entry := range filterEntriesByGroup(req.Entries, groupID) {
-			if err := upsertEntry(tx, entry); err != nil {
-				return fmt.Errorf("upsert entry %s: %w", entry.ID, err)
+		if acceptIncoming {
+			for _, account := range filterAccountsByGroup(req.Accounts, sourceGroupID, groupID) {
+				if err := upsertAccount(tx, account); err != nil {
+					return fmt.Errorf("upsert account %s: %w", account.ID, err)
+				}
 			}
 
-			if err := upsertMerchant(tx, merchantFromEntry(groupID, entry, now)); err != nil {
-				return fmt.Errorf("upsert merchant from entry %s: %w", entry.ID, err)
+			for _, category := range filterCategoriesByGroup(req.Categories, sourceGroupID, groupID, authUserID) {
+				if err := upsertCategory(tx, category); err != nil {
+					return fmt.Errorf("upsert category %s: %w", category.ID, err)
+				}
 			}
-		}
 
-		for _, adjustment := range filterAdjustmentsByGroup(req.Adjustments, groupID) {
-			if err := upsertAdjustment(tx, adjustment); err != nil {
-				return fmt.Errorf("upsert adjustment %s: %w", adjustment.ID, err)
+			for _, entry := range filterEntriesByGroup(req.Entries, sourceGroupID, groupID) {
+				if err := upsertEntry(tx, entry); err != nil {
+					return fmt.Errorf("upsert entry %s: %w", entry.ID, err)
+				}
+
+				if err := upsertMerchant(tx, merchantFromEntry(groupID, entry, now)); err != nil {
+					return fmt.Errorf("upsert merchant from entry %s: %w", entry.ID, err)
+				}
 			}
-		}
 
-		for _, merchant := range filterMerchantsByGroup(req.Merchants, groupID) {
-			if err := upsertMerchant(tx, merchant); err != nil {
-				return fmt.Errorf("upsert merchant %s: %w", merchant.ID, err)
+			for _, adjustment := range filterAdjustmentsByGroup(req.Adjustments, sourceGroupID, groupID) {
+				if err := upsertAdjustment(tx, adjustment); err != nil {
+					return fmt.Errorf("upsert adjustment %s: %w", adjustment.ID, err)
+				}
+			}
+
+			for _, merchant := range filterMerchantsByGroup(req.Merchants, sourceGroupID, groupID) {
+				if err := upsertMerchant(tx, merchant); err != nil {
+					return fmt.Errorf("upsert merchant %s: %w", merchant.ID, err)
+				}
 			}
 		}
 
@@ -123,6 +133,96 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 	}
 
 	return result, nil
+}
+
+func (s *SyncService) resolveUserGroup(
+	tx *gorm.DB,
+	authUserID string,
+	clientGroupID string,
+	deviceUserID string,
+	payloadGroups []dao.ExpenseGroup,
+	now time.Time,
+) (*userGroupResolution, error) {
+	user := &dao.ExpenseUser{}
+	if err := tx.
+		Where("id = ?::uuid and deleted_at is null", authUserID).
+		First(user).Error; err != nil {
+		return nil, err
+	}
+
+	if user.GroupID != nil && strings.TrimSpace(*user.GroupID) != "" {
+		return &userGroupResolution{
+			GroupID:        strings.TrimSpace(*user.GroupID),
+			HadStoredGroup: true,
+		}, nil
+	}
+
+	group := &dao.ExpenseGroup{}
+	err := tx.Raw(fmt.Sprintf(`
+		select id::text as id
+		from %s
+		where created_by = ?::uuid and deleted_at is null
+		order by updated_at desc
+		limit 1
+	`, dao.QualifiedTable("expense_groups")), authUserID).Scan(group).Error
+	if err != nil {
+		return nil, err
+	}
+	targetGroupID := strings.TrimSpace(group.ID)
+	if targetGroupID == "" {
+		lastEntryGroup := struct {
+			GroupID string `gorm:"column:group_id"`
+		}{}
+		err = tx.Raw(fmt.Sprintf(`
+			select group_id::text as group_id
+			from %s
+			where created_by = ?::uuid and deleted_at is null
+			order by updated_at desc
+			limit 1
+		`, dao.QualifiedTable("expense_entries")), authUserID).Scan(&lastEntryGroup).Error
+		if err != nil {
+			return nil, err
+		}
+		targetGroupID = strings.TrimSpace(lastEntryGroup.GroupID)
+	}
+	if targetGroupID == "" {
+		targetGroupID = strings.TrimSpace(clientGroupID)
+	}
+
+	if targetGroupID == "" {
+		generatedID, err := uuid.GenerateUUID()
+		if err != nil {
+			return nil, err
+		}
+		targetGroupID = generatedID
+	}
+
+	exists, err := groupExists(tx, targetGroupID)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		group := activeGroup(payloadGroups, clientGroupID, deviceUserID, now)
+		group.ID = targetGroupID
+		group.InviteCode = randomInviteCode(targetGroupID)
+		if err := upsertGroup(tx, group); err != nil {
+			return nil, fmt.Errorf("create group: %w", err)
+		}
+	}
+
+	if err := tx.Model(&dao.ExpenseUser{}).
+		Where("id = ?::uuid", authUserID).
+		Updates(map[string]any{
+			"group_id":   targetGroupID,
+			"updated_at": now,
+		}).Error; err != nil {
+		return nil, err
+	}
+
+	return &userGroupResolution{
+		GroupID:        targetGroupID,
+		HadStoredGroup: false,
+	}, nil
 }
 
 func activeGroup(groups []dao.ExpenseGroup, groupID, deviceUserID string, now time.Time) dao.ExpenseGroup {
@@ -512,23 +612,33 @@ func pullMerchants(tx *gorm.DB, groupID string) ([]dao.ExpenseMerchant, error) {
 	return rows, nil
 }
 
-func filterAccountsByGroup(records []dao.ExpenseAccount, groupID string) []dao.ExpenseAccount {
+func groupExists(tx *gorm.DB, groupID string) (bool, error) {
+	var count int64
+	err := tx.Table((dao.ExpenseGroup{}).TableName()).
+		Where("id = ?::uuid and deleted_at is null", groupID).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func filterAccountsByGroup(records []dao.ExpenseAccount, sourceGroupID string, targetGroupID string) []dao.ExpenseAccount {
 	filtered := make([]dao.ExpenseAccount, 0, len(records))
 	for _, record := range records {
-		if record.GroupID == groupID {
+		if record.GroupID == sourceGroupID {
+			record.GroupID = targetGroupID
 			filtered = append(filtered, record)
 		}
 	}
 	return filtered
 }
 
-func filterCategoriesByGroup(records []dao.ExpenseCategory, groupID string, authUserID string) []dao.ExpenseCategory {
+func filterCategoriesByGroup(records []dao.ExpenseCategory, sourceGroupID string, targetGroupID string, authUserID string) []dao.ExpenseCategory {
 	filtered := make([]dao.ExpenseCategory, 0, len(records))
 	authUserID = strings.TrimSpace(authUserID)
 	for _, record := range records {
-		if record.GroupID != groupID {
+		if record.GroupID != sourceGroupID {
 			continue
 		}
+		record.GroupID = targetGroupID
 
 		record.Scope = normalizeCategoryScope(record.Scope)
 		if record.Scope == "user" {
@@ -540,37 +650,38 @@ func filterCategoriesByGroup(records []dao.ExpenseCategory, groupID string, auth
 			record.OwnerUserID = nil
 		}
 
-		if record.GroupID == groupID {
-			filtered = append(filtered, record)
-		}
+		filtered = append(filtered, record)
 	}
 	return filtered
 }
 
-func filterEntriesByGroup(records []dao.ExpenseEntry, groupID string) []dao.ExpenseEntry {
+func filterEntriesByGroup(records []dao.ExpenseEntry, sourceGroupID string, targetGroupID string) []dao.ExpenseEntry {
 	filtered := make([]dao.ExpenseEntry, 0, len(records))
 	for _, record := range records {
-		if record.GroupID == groupID {
+		if record.GroupID == sourceGroupID {
+			record.GroupID = targetGroupID
 			filtered = append(filtered, record)
 		}
 	}
 	return filtered
 }
 
-func filterAdjustmentsByGroup(records []dao.ExpenseCategoryAdjustment, groupID string) []dao.ExpenseCategoryAdjustment {
+func filterAdjustmentsByGroup(records []dao.ExpenseCategoryAdjustment, sourceGroupID string, targetGroupID string) []dao.ExpenseCategoryAdjustment {
 	filtered := make([]dao.ExpenseCategoryAdjustment, 0, len(records))
 	for _, record := range records {
-		if record.GroupID == groupID {
+		if record.GroupID == sourceGroupID {
+			record.GroupID = targetGroupID
 			filtered = append(filtered, record)
 		}
 	}
 	return filtered
 }
 
-func filterMerchantsByGroup(records []dao.ExpenseMerchant, groupID string) []dao.ExpenseMerchant {
+func filterMerchantsByGroup(records []dao.ExpenseMerchant, sourceGroupID string, targetGroupID string) []dao.ExpenseMerchant {
 	filtered := make([]dao.ExpenseMerchant, 0, len(records))
 	for _, record := range records {
-		if record.GroupID == groupID {
+		if record.GroupID == sourceGroupID {
+			record.GroupID = targetGroupID
 			filtered = append(filtered, record)
 		}
 	}

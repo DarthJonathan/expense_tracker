@@ -45,6 +45,7 @@ func (s *AuthService) Register(ctx context.Context, req *request.RegisterRequest
 	email := normalizeEmail(req.Email)
 	password := strings.TrimSpace(req.Password)
 	displayName := strings.TrimSpace(req.DisplayName)
+	inviteCode := strings.ToUpper(strings.TrimSpace(req.InviteCode))
 
 	if email == "" {
 		return nil, errors.New("email is required")
@@ -76,11 +77,16 @@ func (s *AuthService) Register(ctx context.Context, req *request.RegisterRequest
 	}
 
 	now := time.Now().UTC()
+	groupID, err := s.resolveGroupForSignup(ctx, inviteCode, userID, now)
+	if err != nil {
+		return nil, err
+	}
 	user := &dao.ExpenseUser{
 		ID:           userID,
 		Email:        email,
 		PasswordHash: string(hashBytes),
 		DisplayName:  displayName,
+		GroupID:      optional(groupID),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -279,6 +285,52 @@ func (s *AuthService) issueToken(user *dao.ExpenseUser) (*response.AuthData, err
 			DisplayName: user.DisplayName,
 		},
 	}, nil
+}
+
+func (s *AuthService) resolveGroupForSignup(ctx context.Context, inviteCode string, userID string, now time.Time) (string, error) {
+	if inviteCode != "" {
+		group := &dao.ExpenseGroup{}
+		err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+			select
+				id::text as id,
+				name,
+				invite_code,
+				created_by::text as created_by,
+				created_at,
+				updated_at,
+				deleted_at
+			from %s
+			where upper(invite_code) = ? and deleted_at is null
+			limit 1
+		`, dao.QualifiedTable("expense_groups")), inviteCode).Scan(group).Error
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(group.ID) == "" {
+			return "", errors.New("invalid invite code")
+		}
+		return group.ID, nil
+	}
+
+	groupID, err := uuid.GenerateUUID()
+	if err != nil {
+		return "", err
+	}
+
+	group := dao.ExpenseGroup{
+		ID:         groupID,
+		Name:       "Household",
+		InviteCode: strings.ToUpper(strings.ReplaceAll(groupID, "-", ""))[:6],
+		CreatedBy:  optional(strings.TrimSpace(userID)),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	if err := s.DB.WithContext(ctx).Table((dao.ExpenseGroup{}).TableName()).Create(&group).Error; err != nil {
+		return "", err
+	}
+
+	return groupID, nil
 }
 
 func normalizeEmail(email string) string {

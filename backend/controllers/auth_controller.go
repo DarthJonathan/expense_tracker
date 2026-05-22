@@ -124,6 +124,7 @@ func authErrorStatus(err error) int {
 	switch {
 	case strings.Contains(message, "required"),
 		strings.Contains(message, "invalid credentials"),
+		strings.Contains(message, "invalid invite"),
 		strings.Contains(message, "invalid api key"),
 		strings.Contains(message, "api key expired"),
 		strings.Contains(message, "already registered"),

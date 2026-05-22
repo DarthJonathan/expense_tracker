@@ -96,6 +96,11 @@ export async function syncFinanceState(state: FinanceState): Promise<FinanceStat
 	const entries = backendData.entries ?? [];
 	const adjustments = backendData.adjustments ?? [];
 	const merchants = backendData.merchants ?? [];
+	const remoteGroupIds = groups.map((group) => group.id);
+	const resolvedActiveGroupId =
+		remoteGroupIds.length > 0 && !remoteGroupIds.includes(state.settings.activeGroupId)
+			? remoteGroupIds[0]
+			: state.settings.activeGroupId;
 
 	const remote = {
 		groups: newerOnly(state.groups, groups),
@@ -110,7 +115,11 @@ export async function syncFinanceState(state: FinanceState): Promise<FinanceStat
 
 	return {
 		...state,
-		settings: { ...state.settings, lastSyncedAt: backendData.syncedAt || isoNow() },
+		settings: {
+			...state.settings,
+			activeGroupId: resolvedActiveGroupId,
+			lastSyncedAt: backendData.syncedAt || isoNow()
+		},
 		groups: mergeById(state.groups, remote.groups),
 		accounts: mergeById(state.accounts, remote.accounts),
 		categories: mergeById(state.categories, remote.categories),

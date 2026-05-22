@@ -21,6 +21,9 @@ create table if not exists spendit.expense_groups (
 	deleted_at timestamptz
 );
 
+alter table spendit.expense_users
+	add column if not exists group_id uuid references spendit.expense_groups(id) on delete set null;
+
 create table if not exists spendit.expense_accounts (
 	id uuid primary key default gen_random_uuid(),
 	group_id uuid not null references spendit.expense_groups(id) on delete cascade,

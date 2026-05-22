@@ -4,6 +4,7 @@ type RegisterRequest struct {
 	Email       string `json:"email"`
 	Password    string `json:"password"`
 	DisplayName string `json:"displayName"`
+	InviteCode  string `json:"inviteCode"`
 }
 
 type LoginRequest struct {

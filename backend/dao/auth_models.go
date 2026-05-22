@@ -7,6 +7,7 @@ type ExpenseUser struct {
 	Email        string     `gorm:"column:email;type:text;not null;uniqueIndex" json:"email"`
 	PasswordHash string     `gorm:"column:password_hash;type:text;not null" json:"-"`
 	DisplayName  string     `gorm:"column:display_name;type:text;not null" json:"displayName"`
+	GroupID      *string    `gorm:"column:group_id;type:uuid;index" json:"groupId,omitempty"`
 	CreatedAt    time.Time  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
 	UpdatedAt    time.Time  `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
 	DeletedAt    *time.Time `gorm:"column:deleted_at" json:"deletedAt,omitempty"`

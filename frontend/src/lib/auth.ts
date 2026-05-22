@@ -59,8 +59,13 @@ export function clearSession(): void {
 	localStorage.removeItem(STORAGE_KEY);
 }
 
-export async function register(email: string, password: string, displayName: string): Promise<AuthSession> {
-	return authRequest('/api/v1/auth/register', { email, password, displayName });
+export async function register(
+	email: string,
+	password: string,
+	displayName: string,
+	inviteCode: string
+): Promise<AuthSession> {
+	return authRequest('/api/v1/auth/register', { email, password, displayName, inviteCode });
 }
 
 export async function login(email: string, password: string): Promise<AuthSession> {

@@ -27,6 +27,37 @@ func (s *ExpenseService) ResolveOrCreateUserGroup(ctx context.Context, userID st
 		return nil, fmt.Errorf("user is required")
 	}
 
+	user := &dao.ExpenseUser{}
+	if err := s.DB.WithContext(ctx).
+		Where("id = ?::uuid and deleted_at is null", owner).
+		First(user).Error; err != nil {
+		return nil, err
+	}
+
+	if user.GroupID != nil && strings.TrimSpace(*user.GroupID) != "" {
+		groupID := strings.TrimSpace(*user.GroupID)
+		group := &dao.ExpenseGroup{}
+		err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+			select
+				id::text as id,
+				name,
+				invite_code,
+				created_by::text as created_by,
+				created_at,
+				updated_at,
+				deleted_at
+			from %s
+			where id = ?::uuid and deleted_at is null
+			limit 1
+		`, dao.QualifiedTable("expense_groups")), groupID).Scan(group).Error
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(group.ID) != "" {
+			return group, nil
+		}
+	}
+
 	group := &dao.ExpenseGroup{}
 	err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
 		select
@@ -47,13 +78,23 @@ func (s *ExpenseService) ResolveOrCreateUserGroup(ctx context.Context, userID st
 	}
 
 	if strings.TrimSpace(group.ID) != "" {
+		_ = s.DB.WithContext(ctx).Model(&dao.ExpenseUser{}).
+			Where("id = ?::uuid", owner).
+			Updates(map[string]any{"group_id": group.ID, "updated_at": time.Now().UTC()}).Error
 		return group, nil
 	}
 
-	return s.CreateGroup(ctx, &request.CreateGroupRequest{
+	created, err := s.CreateGroup(ctx, &request.CreateGroupRequest{
 		Name:      "Household",
 		CreatedBy: owner,
 	})
+	if err != nil {
+		return nil, err
+	}
+	_ = s.DB.WithContext(ctx).Model(&dao.ExpenseUser{}).
+		Where("id = ?::uuid", owner).
+		Updates(map[string]any{"group_id": created.ID, "updated_at": time.Now().UTC()}).Error
+	return created, nil
 }
 
 func (s *ExpenseService) CreateGroup(ctx context.Context, req *request.CreateGroupRequest) (*dao.ExpenseGroup, error) {

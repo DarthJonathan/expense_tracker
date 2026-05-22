@@ -83,6 +83,7 @@
 				<input name="email" type="email" placeholder="Email" required />
 				<input name="password" type="password" placeholder="Password (min 8 chars)" minlength="8" required />
 				<input name="displayName" placeholder="Display name (optional)" />
+				<input name="inviteCode" placeholder="Invite code (optional)" />
 				<button id="submit-btn" type="submit">Sign up</button>
 			</form>
 			<div id="status" class="status" hidden></div>
@@ -107,7 +108,8 @@
 				const payload = {
 					email: form.email.value.trim(),
 					password: form.password.value,
-					displayName: form.displayName.value.trim()
+					displayName: form.displayName.value.trim(),
+					inviteCode: form.inviteCode.value.trim()
 				};
 
 				try {
