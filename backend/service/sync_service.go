@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -347,44 +348,54 @@ func upsertCategory(tx *gorm.DB, category dao.ExpenseCategory) error {
 
 func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) error {
 	now := time.Now().UTC()
-	row := map[string]any{
-		"id":          entry.ID,
-		"group_id":    entry.GroupID,
-		"account_id":  entry.AccountID,
-		"category_id": entry.CategoryID,
-		"type":        entry.Type,
-		"amount":      entry.Amount,
-		"currency":    normalizeEntryCurrency(entry.Currency),
-		"occurred_on": entry.OccurredOn,
-		"merchant":    entry.Merchant,
-		"note":        entry.Note,
-		"metadata":    entry.Metadata,
-		"created_by":  stringOrNil(entry.CreatedBy),
-		"created_at":  normalizeTime(entry.CreatedAt, now),
-		"updated_at":  normalizeTime(entry.UpdatedAt, now),
-		"deleted_at":  entry.DeletedAt,
+	metadataJSON, err := json.Marshal(entry.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal entry metadata: %w", err)
 	}
+	if len(metadataJSON) == 0 || string(metadataJSON) == "null" {
+		metadataJSON = []byte("{}")
+	}
+	table := dao.QualifiedTable("expense_entries")
 
-	return tx.Table((dao.ExpenseEntry{}).TableName()).
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "id"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"group_id":    row["group_id"],
-				"account_id":  row["account_id"],
-				"category_id": row["category_id"],
-				"type":        row["type"],
-				"amount":      row["amount"],
-				"currency":    row["currency"],
-				"occurred_on": row["occurred_on"],
-				"merchant":    row["merchant"],
-				"note":        row["note"],
-				"metadata":    row["metadata"],
-				"created_by":  gorm.Expr(fmt.Sprintf("coalesce(%s.created_by, excluded.created_by)", dao.QualifiedTable("expense_entries"))),
-				"updated_at":  row["updated_at"],
-				"deleted_at":  row["deleted_at"],
-			}),
-		}).
-		Create(row).Error
+	return tx.Exec(fmt.Sprintf(`
+		insert into %s (
+			id, group_id, account_id, category_id, type, amount, currency, occurred_on,
+			merchant, note, metadata, created_by, created_at, updated_at, deleted_at
+		) values (
+			?::uuid, ?::uuid, ?::uuid, ?::uuid, ?, ?, ?, ?::date,
+			?, ?, ?::jsonb, ?::uuid, ?, ?, ?
+		)
+		on conflict (id) do update set
+			group_id = excluded.group_id,
+			account_id = excluded.account_id,
+			category_id = excluded.category_id,
+			type = excluded.type,
+			amount = excluded.amount,
+			currency = excluded.currency,
+			occurred_on = excluded.occurred_on,
+			merchant = excluded.merchant,
+			note = excluded.note,
+			metadata = excluded.metadata,
+			created_by = coalesce(%s.created_by, excluded.created_by),
+			updated_at = excluded.updated_at,
+			deleted_at = excluded.deleted_at
+	`, table, table),
+		entry.ID,
+		entry.GroupID,
+		entry.AccountID,
+		entry.CategoryID,
+		entry.Type,
+		entry.Amount,
+		normalizeEntryCurrency(entry.Currency),
+		entry.OccurredOn,
+		entry.Merchant,
+		entry.Note,
+		string(metadataJSON),
+		stringOrNil(entry.CreatedBy),
+		normalizeTime(entry.CreatedAt, now),
+		normalizeTime(entry.UpdatedAt, now),
+		entry.DeletedAt,
+	).Error
 }
 
 func upsertAdjustment(tx *gorm.DB, adjustment dao.ExpenseCategoryAdjustment) error {
