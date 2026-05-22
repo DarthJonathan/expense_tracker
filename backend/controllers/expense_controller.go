@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -262,8 +264,18 @@ func (c *ExpenseController) CreateEntryV1(w http.ResponseWriter, r *http.Request
 }
 
 func (c *ExpenseController) CreateAutomationEntryV1(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		c.writeJSON(w, http.StatusBadRequest, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "invalid request body"},
+		})
+		return
+	}
+
+	log.WithField("automationPayload", string(bodyBytes)).Info("automation entry payload")
+
 	req := &request.CreateAutomationEntryRequest{}
-	if err := c.decodeJSON(req, r); err != nil {
+	if err := json.Unmarshal(bodyBytes, req); err != nil {
 		c.writeJSON(w, http.StatusBadRequest, response.ExpenseResponse{
 			BaseResponse: response.BaseResponse{Success: false, Error: "invalid request body"},
 		})
