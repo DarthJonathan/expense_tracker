@@ -63,6 +63,7 @@ create table if not exists spendit.expense_entries (
 	occurred_on date not null,
 	merchant text not null,
 	note text not null default '',
+	metadata jsonb not null default '{}'::jsonb,
 	created_by uuid,
 	created_at timestamptz not null default now(),
 	updated_at timestamptz not null default now(),

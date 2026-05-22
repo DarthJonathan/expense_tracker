@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -307,9 +310,9 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 	}
 
 	entryType := "expense"
-	amount := req.Amount
-	if amount < 0 {
-		amount = -amount
+	amount, err := parseAutomationAmount(req.Amount)
+	if err != nil {
+		return nil, err
 	}
 
 	category, err := s.findOrCreateHouseholdCategoryByType(ctx, group.ID, trimmedUserID, entryType)
@@ -321,6 +324,10 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 	if err != nil {
 		return nil, err
 	}
+	metadata := map[string]any{}
+	if device := strings.TrimSpace(req.Device); device != "" {
+		metadata["device"] = device
+	}
 
 	return s.CreateExpense(ctx, group.ID, trimmedUserID, &request.CreateExpenseRequest{
 		AccountID:  account.ID,
@@ -331,6 +338,7 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 		OccurredOn: occurredOn,
 		Merchant:   merchant,
 		Note:       "",
+		Metadata:   metadata,
 	})
 }
 
@@ -397,6 +405,7 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 		OccurredOn: occurredOn,
 		Merchant:   merchant,
 		Note:       strings.TrimSpace(req.Note),
+		Metadata:   normalizeMetadata(req.Metadata),
 		CreatedBy:  createdBy,
 		CreatedAt:  now,
 		UpdatedAt:  now,
@@ -434,6 +443,7 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 			to_char(occurred_on, 'YYYY-MM-DD') as occurred_on,
 			merchant,
 			note,
+			metadata,
 			created_by::text as created_by,
 			created_at,
 			updated_at,
@@ -567,6 +577,7 @@ func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *
 		to_char(e.occurred_on, 'YYYY-MM-DD') as occurred_on,
 		e.merchant,
 		e.note,
+		e.metadata,
 		e.created_by::text as created_by,
 		e.created_at,
 		e.updated_at,
@@ -720,6 +731,104 @@ func normalizeCreatedAtDate(value string) (string, error) {
 	return "", fmt.Errorf("createdAt must be RFC3339 or YYYY-MM-DD")
 }
 
+func parseAutomationAmount(raw json.RawMessage) (int, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return 0, fmt.Errorf("amount is required")
+	}
+
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return 0, fmt.Errorf("amount must be a number or string")
+	}
+
+	switch value := decoded.(type) {
+	case float64:
+		return normalizeAutomationNumericAmount(value)
+	case string:
+		return normalizeAutomationStringAmount(value)
+	default:
+		return 0, fmt.Errorf("amount must be a number or string")
+	}
+}
+
+func normalizeAutomationNumericAmount(value float64) (int, error) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, fmt.Errorf("amount must be finite")
+	}
+	if value <= 0 {
+		return 0, fmt.Errorf("amount must be greater than 0")
+	}
+
+	// Keep backward compatibility with existing automation clients that send
+	// whole-number amounts in cents (e.g. 1290 => SGD 12.90).
+	if value == math.Trunc(value) {
+		return int(value), nil
+	}
+
+	cents := int(math.Round(value * 100))
+	if cents <= 0 {
+		return 0, fmt.Errorf("amount must be greater than 0")
+	}
+	return cents, nil
+}
+
+func normalizeAutomationStringAmount(value string) (int, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, fmt.Errorf("amount is required")
+	}
+
+	clean := strings.Map(func(r rune) rune {
+		switch {
+		case r >= '0' && r <= '9':
+			return r
+		case r == '.' || r == ',' || r == '-' || r == '+':
+			return r
+		default:
+			return -1
+		}
+	}, trimmed)
+	if clean == "" {
+		return 0, fmt.Errorf("amount must contain digits")
+	}
+
+	lastDot := strings.LastIndex(clean, ".")
+	lastComma := strings.LastIndex(clean, ",")
+	normalized := clean
+	switch {
+	case lastDot >= 0 && lastComma >= 0:
+		if lastDot > lastComma {
+			normalized = strings.ReplaceAll(clean, ",", "")
+		} else {
+			withoutDots := strings.ReplaceAll(clean, ".", "")
+			normalized = strings.ReplaceAll(withoutDots, ",", ".")
+		}
+	case lastComma >= 0:
+		commaCount := strings.Count(clean, ",")
+		if commaCount == 1 && len(clean[lastComma+1:]) <= 2 {
+			normalized = strings.ReplaceAll(clean, ",", ".")
+		} else {
+			normalized = strings.ReplaceAll(clean, ",", "")
+		}
+	default:
+		normalized = clean
+	}
+
+	parsed, err := strconv.ParseFloat(normalized, 64)
+	if err != nil {
+		return 0, fmt.Errorf("amount is invalid")
+	}
+	if parsed < 0 {
+		parsed = -parsed
+	}
+	cents := int(math.Round(parsed * 100))
+	if cents <= 0 {
+		return 0, fmt.Errorf("amount must be greater than 0")
+	}
+	return cents, nil
+}
+
 func normalizeCurrencyCode(value string) (string, error) {
 	_ = strings.TrimSpace(value)
 	return "SGD", nil
@@ -731,6 +840,25 @@ func normalizeIcon(value string, fallback string) string {
 		return fallback
 	}
 	return trimmed
+}
+
+func normalizeMetadata(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+
+	normalized := make(map[string]any, len(value))
+	for key, raw := range value {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		normalized[trimmedKey] = raw
+	}
+	if len(normalized) == 0 {
+		return map[string]any{}
+	}
+	return normalized
 }
 
 type categoryMeta struct {

@@ -1,5 +1,7 @@
 package request
 
+import "encoding/json"
+
 type CreateGroupRequest struct {
 	Name      string `json:"name"`
 	CreatedBy string `json:"createdBy,omitempty"`
@@ -23,14 +25,15 @@ type CreateCategoryRequest struct {
 }
 
 type CreateExpenseRequest struct {
-	AccountID  string `json:"accountId"`
-	CategoryID string `json:"categoryId"`
-	Type       string `json:"type"`
-	Amount     int    `json:"amount"`
-	Currency   string `json:"currency,omitempty"`
-	OccurredOn string `json:"occurredOn"`
-	Merchant   string `json:"merchant"`
-	Note       string `json:"note"`
+	AccountID  string         `json:"accountId"`
+	CategoryID string         `json:"categoryId"`
+	Type       string         `json:"type"`
+	Amount     int            `json:"amount"`
+	Currency   string         `json:"currency,omitempty"`
+	OccurredOn string         `json:"occurredOn"`
+	Merchant   string         `json:"merchant"`
+	Note       string         `json:"note"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 type UpdateExpenseRequest struct {
@@ -56,10 +59,11 @@ type CreateEntryRequest struct {
 }
 
 type CreateAutomationEntryRequest struct {
-	CreatedAt   string `json:"createdAt"`
-	AccountType string `json:"accountType"`
-	Merchant    string `json:"merchant"`
-	Amount      int    `json:"amount"`
+	CreatedAt   string          `json:"createdAt"`
+	AccountType string          `json:"accountType"`
+	Merchant    string          `json:"merchant"`
+	Amount      json.RawMessage `json:"amount"`
+	Device      string          `json:"device,omitempty"`
 }
 
 type ListExpensesRequest struct {

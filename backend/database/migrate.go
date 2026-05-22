@@ -138,6 +138,9 @@ func Migrate(db *gorm.DB) error {
 			on %s (group_id, account_id, occurred_on desc)
 			where deleted_at is null`,
 			tables["entries"]),
+		fmt.Sprintf(`alter table %s
+			add column if not exists metadata jsonb not null default '{}'::jsonb`,
+			tables["entries"]),
 		`update ` + tables["entries"] + `
 			set currency = 'SGD'
 			where coalesce(currency, '') <> 'SGD'`,
