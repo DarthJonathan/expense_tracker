@@ -310,10 +310,7 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 	}
 
 	entryType := "expense"
-	amount, err := parseAutomationAmount(req.Amount)
-	if err != nil {
-		return nil, err
-	}
+	amount, parseErr := parseAutomationAmount(req.Amount)
 
 	category, err := s.findOrCreateHouseholdCategoryByType(ctx, group.ID, trimmedUserID, entryType)
 	if err != nil {
@@ -327,6 +324,11 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 	metadata := map[string]any{}
 	if device := strings.TrimSpace(req.Device); device != "" {
 		metadata["device"] = device
+	}
+	if parseErr != nil {
+		metadata["amountParseError"] = parseErr.Error()
+		metadata["amountRaw"] = strings.TrimSpace(string(req.Amount))
+		amount = 0
 	}
 
 	return s.CreateExpense(ctx, group.ID, trimmedUserID, &request.CreateExpenseRequest{
