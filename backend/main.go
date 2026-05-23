@@ -146,9 +146,42 @@ func initDatabase(databaseURL string) *gorm.DB {
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetMaxOpenConns(100)
 	sqlDB.SetConnMaxLifetime(time.Hour)
+	registerMutationLogCallbacks(db)
 
 	log.Info("database connected")
 	return db
+}
+
+func registerMutationLogCallbacks(db *gorm.DB) {
+	logMutation := func(operation string) func(*gorm.DB) {
+		return func(tx *gorm.DB) {
+			if tx == nil || tx.Statement == nil {
+				return
+			}
+			if tx.Error != nil {
+				log.WithError(tx.Error).WithField("operation", operation).Warn("database mutation failed")
+				return
+			}
+
+			table := tx.Statement.Table
+			if table == "" && tx.Statement.Schema != nil {
+				table = tx.Statement.Schema.Table
+			}
+			if table == "" {
+				table = "unknown"
+			}
+
+			log.WithFields(log.Fields{
+				"operation":     operation,
+				"table":         table,
+				"rows_affected": tx.RowsAffected,
+			}).Info("database mutation")
+		}
+	}
+
+	_ = db.Callback().Create().After("gorm:create").Register("spendit:log_create", logMutation("insert"))
+	_ = db.Callback().Update().After("gorm:update").Register("spendit:log_update", logMutation("update"))
+	_ = db.Callback().Delete().After("gorm:delete").Register("spendit:log_delete", logMutation("delete"))
 }
 
 func resolveDatabaseURL() string {
