@@ -2473,37 +2473,41 @@ body {
 	background: color-mix(in srgb, var(--primary) 18%, transparent);
 }
 
-.feedback-modal-backdrop {
-	align-items: center;
-	background: color-mix(in srgb, var(--ink) 42%, transparent);
+.feedback-toast-wrap {
+	bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px) + 0.6rem);
 	display: flex;
-	inset: 0;
 	justify-content: center;
-	padding: 1.25rem;
+	left: 0;
+	padding-inline: 1rem;
+	pointer-events: none;
 	position: fixed;
+	right: 0;
 	z-index: 80;
 }
 
-.feedback-modal {
+.feedback-toast {
+	align-items: center;
 	animation: feedback-pop 220ms ease-out;
 	background: var(--panel);
 	border: 1px solid var(--line);
-	max-width: 22rem;
-	padding: 1rem;
-	text-align: center;
+	display: grid;
+	gap: 0.65rem;
+	grid-template-columns: auto 1fr;
+	max-width: 26rem;
+	padding: 0.8rem 0.9rem;
 	width: 100%;
 }
 
-.feedback-modal h3 {
-	font-size: 1.3rem;
-	margin: 0.2rem 0 0.5rem;
+.feedback-copy h3 {
+	font-size: 0.98rem;
+	margin: 0 0 0.12rem;
 }
 
-.feedback-modal p {
+.feedback-copy p {
 	color: var(--muted);
-	font-size: 0.95rem;
+	font-size: 0.83rem;
 	font-weight: 700;
-	margin: 0 0 1rem;
+	margin: 0;
 }
 
 .feedback-icon {
@@ -2517,22 +2521,20 @@ body {
 	width: 2rem;
 }
 
-.feedback-modal.success .feedback-icon {
+.feedback-toast.success .feedback-icon {
 	color: #3f6941;
 }
 
-.feedback-modal.error .feedback-icon {
+.feedback-toast.error .feedback-icon {
 	color: #9c332b;
 }
 
-.feedback-modal button {
-	background: var(--primary);
-	border: 1px solid var(--primary);
-	color: #fff;
-	font-size: 0.95rem;
-	font-weight: 900;
-	min-height: 2.6rem;
-	width: 100%;
+@media (min-width: 768px) {
+	.feedback-toast-wrap {
+		bottom: auto;
+		padding-inline: 1.25rem;
+		top: 1rem;
+	}
 }
 
 .auth-overlay {
@@ -2712,7 +2714,7 @@ body {
 	}
 }
 
-:root[data-theme='dark'] .feedback-modal {
+:root[data-theme='dark'] .feedback-toast {
 	background: var(--panel);
 	border-color: var(--line);
 	color: var(--ink);

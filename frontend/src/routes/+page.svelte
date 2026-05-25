@@ -1116,11 +1116,6 @@ function getEntryCategoryOptions(
 		}, 2200);
 	}
 
-	function closeFeedback(): void {
-		if (feedbackTimer) clearTimeout(feedbackTimer);
-		feedbackOpen = false;
-	}
-
 	function handleAuthHeadingTap(): void {
 		if (signupUnlocked) return;
 		authTapCount += 1;
@@ -2161,12 +2156,13 @@ function getEntryCategoryOptions(
 </main>
 
 {#if feedbackOpen}
-	<div class="feedback-modal-backdrop" role="status" aria-live="polite">
-		<div class={`feedback-modal ${feedbackKind}`}>
+	<div class="feedback-toast-wrap" role="status" aria-live="polite">
+		<div class={`feedback-toast ${feedbackKind}`}>
 			<div class="feedback-icon" aria-hidden="true">{feedbackKind === 'success' ? '✓' : '!'}</div>
-			<h3>{feedbackTitle}</h3>
-			<p>{feedbackMessage}</p>
-			<button type="button" on:click={closeFeedback}>OK</button>
+			<div class="feedback-copy">
+				<h3>{feedbackTitle}</h3>
+				<p>{feedbackMessage}</p>
+			</div>
 		</div>
 	</div>
 {/if}
