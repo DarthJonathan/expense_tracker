@@ -13,6 +13,12 @@ func Migrate(db *gorm.DB) error {
 	if err := db.Exec(`create extension if not exists pgcrypto`).Error; err != nil {
 		return fmt.Errorf("create pgcrypto extension: %w", err)
 	}
+	if err := db.Exec(`create extension if not exists pg_trgm`).Error; err != nil {
+		return fmt.Errorf("create pg_trgm extension: %w", err)
+	}
+	if err := db.Exec(`create extension if not exists unaccent`).Error; err != nil {
+		return fmt.Errorf("create unaccent extension: %w", err)
+	}
 	schema := dao.Schema()
 	if err := db.Exec(fmt.Sprintf("create schema if not exists %s", quoteIdentifier(schema))).Error; err != nil {
 		return fmt.Errorf("create schema: %w", err)
@@ -27,16 +33,20 @@ func Migrate(db *gorm.DB) error {
 		&dao.ExpenseEntry{},
 		&dao.ExpenseCategoryAdjustment{},
 		&dao.ExpenseMerchant{},
+		&dao.ExpenseMerchantCategoryMap{},
+		&dao.ExpenseCategoryRule{},
 	); err != nil {
 		return fmt.Errorf("automigrate tables: %w", err)
 	}
 
 	tables := map[string]string{
-		"categories": dao.QualifiedTable("expense_categories"),
-		"accounts":   dao.QualifiedTable("expense_accounts"),
-		"apiKeys":    dao.QualifiedTable("expense_api_keys"),
-		"merchants":  dao.QualifiedTable("expense_merchants"),
-		"entries":    dao.QualifiedTable("expense_entries"),
+		"categories":           dao.QualifiedTable("expense_categories"),
+		"accounts":             dao.QualifiedTable("expense_accounts"),
+		"apiKeys":              dao.QualifiedTable("expense_api_keys"),
+		"merchants":            dao.QualifiedTable("expense_merchants"),
+		"merchantCategoryMaps": dao.QualifiedTable("expense_merchant_category_maps"),
+		"categoryRules":        dao.QualifiedTable("expense_category_rules"),
+		"entries":              dao.QualifiedTable("expense_entries"),
 	}
 
 	indexes := []string{
@@ -126,6 +136,41 @@ func Migrate(db *gorm.DB) error {
 		fmt.Sprintf(`create unique index if not exists expense_merchants_group_normalized_name_uidx
 			on %s (group_id, normalized_name)`,
 			tables["merchants"]),
+		fmt.Sprintf(`create unique index if not exists expense_merchant_category_maps_group_merchant_type_uidx
+			on %s (group_id, normalized_merchant, entry_type)
+			where deleted_at is null`,
+			tables["merchantCategoryMaps"]),
+		fmt.Sprintf(`create index if not exists expense_merchant_category_maps_merchant_trgm_idx
+			on %s using gin (normalized_merchant gin_trgm_ops)`,
+			tables["merchantCategoryMaps"]),
+		fmt.Sprintf(`create index if not exists expense_category_rules_group_priority_idx
+			on %s (group_id, priority, updated_at desc)
+			where deleted_at is null and enabled = true`,
+			tables["categoryRules"]),
+		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_merchant_category_maps_entry_type_check`,
+			tables["merchantCategoryMaps"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_merchant_category_maps_entry_type_check check (entry_type in ('expense', 'income'))`,
+			tables["merchantCategoryMaps"]),
+		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_category_rules_entry_type_check`,
+			tables["categoryRules"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_category_rules_entry_type_check check (entry_type in ('expense', 'income', 'any'))`,
+			tables["categoryRules"]),
+		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_category_rules_match_field_check`,
+			tables["categoryRules"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_category_rules_match_field_check check (match_field in ('merchant', 'note', 'account_type'))`,
+			tables["categoryRules"]),
+		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_category_rules_match_kind_check`,
+			tables["categoryRules"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_category_rules_match_kind_check check (match_kind in ('contains', 'prefix', 'equals', 'regex'))`,
+			tables["categoryRules"]),
 		fmt.Sprintf(`create index if not exists expense_entries_group_period_idx
 			on %s (group_id, occurred_on desc)
 			where deleted_at is null`,

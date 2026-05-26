@@ -97,3 +97,42 @@ type ExpenseMerchant struct {
 func (ExpenseMerchant) TableName() string {
 	return QualifiedTable("expense_merchants")
 }
+
+type ExpenseMerchantCategoryMap struct {
+	ID                 string     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	GroupID            string     `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
+	NormalizedMerchant string     `gorm:"column:normalized_merchant;type:text;not null;index" json:"normalizedMerchant"`
+	EntryType          string     `gorm:"column:entry_type;type:text;not null;default:'expense';check:entry_type in ('expense','income')" json:"entryType"`
+	CategoryID         string     `gorm:"column:category_id;type:uuid;not null;index" json:"categoryId"`
+	Confidence         float64    `gorm:"column:confidence;type:numeric(4,3);not null;default:1.000" json:"confidence"`
+	Source             string     `gorm:"column:source;type:text;not null;default:'learned'" json:"source"`
+	HitCount           int        `gorm:"column:hit_count;not null;default:0" json:"hitCount"`
+	LastSeenAt         *time.Time `gorm:"column:last_seen_at" json:"lastSeenAt,omitempty"`
+	CreatedAt          time.Time  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
+	UpdatedAt          time.Time  `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
+	DeletedAt          *time.Time `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
+}
+
+func (ExpenseMerchantCategoryMap) TableName() string {
+	return QualifiedTable("expense_merchant_category_maps")
+}
+
+type ExpenseCategoryRule struct {
+	ID         string     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	GroupID    string     `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
+	Priority   int        `gorm:"column:priority;not null;default:100" json:"priority"`
+	Enabled    bool       `gorm:"column:enabled;not null;default:true" json:"enabled"`
+	EntryType  string     `gorm:"column:entry_type;type:text;not null;default:'any';check:entry_type in ('expense','income','any')" json:"entryType"`
+	MatchField string     `gorm:"column:match_field;type:text;not null;default:'merchant';check:match_field in ('merchant','note','account_type')" json:"matchField"`
+	MatchKind  string     `gorm:"column:match_kind;type:text;not null;default:'contains';check:match_kind in ('contains','prefix','equals','regex')" json:"matchKind"`
+	Pattern    string     `gorm:"column:pattern;type:text;not null" json:"pattern"`
+	CategoryID string     `gorm:"column:category_id;type:uuid;not null;index" json:"categoryId"`
+	Confidence float64    `gorm:"column:confidence;type:numeric(4,3);not null;default:0.900" json:"confidence"`
+	CreatedAt  time.Time  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
+	UpdatedAt  time.Time  `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
+	DeletedAt  *time.Time `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
+}
+
+func (ExpenseCategoryRule) TableName() string {
+	return QualifiedTable("expense_category_rules")
+}

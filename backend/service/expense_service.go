@@ -312,11 +312,6 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 	entryType := "expense"
 	amount, parseErr := parseAutomationAmount(req.Amount)
 
-	category, err := s.findOrCreateHouseholdCategoryByType(ctx, group.ID, trimmedUserID, entryType)
-	if err != nil {
-		return nil, err
-	}
-
 	occurredOn, err := normalizeCreatedAtDate(req.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -333,7 +328,7 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 
 	return s.CreateExpense(ctx, group.ID, trimmedUserID, &request.CreateExpenseRequest{
 		AccountID:  account.ID,
-		CategoryID: category.ID,
+		CategoryID: "",
 		Type:       entryType,
 		Amount:     amount,
 		Currency:   "SGD",
@@ -348,9 +343,6 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 	if strings.TrimSpace(req.AccountID) == "" {
 		return nil, fmt.Errorf("accountId is required")
 	}
-	if strings.TrimSpace(req.CategoryID) == "" {
-		return nil, fmt.Errorf("categoryId is required")
-	}
 	if req.Amount < 0 {
 		return nil, fmt.Errorf("amount must be >= 0")
 	}
@@ -363,17 +355,63 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 		return nil, fmt.Errorf("type must be expense or income")
 	}
 
-	categoryMeta, err := s.findCategoryForUser(ctx, groupID, strings.TrimSpace(req.CategoryID), createdByUserID)
-	if err != nil {
-		return nil, err
-	}
-	if categoryMeta.Type != "" && categoryMeta.Type != entryType {
-		return nil, fmt.Errorf("category type mismatch: category is %s but entry is %s", categoryMeta.Type, entryType)
-	}
-
 	merchant := strings.TrimSpace(req.Merchant)
 	if merchant == "" {
 		return nil, fmt.Errorf("merchant is required")
+	}
+	accountID := strings.TrimSpace(req.AccountID)
+	categoryID := strings.TrimSpace(req.CategoryID)
+	providedCategoryID := categoryID != ""
+	metadata := normalizeMetadata(req.Metadata)
+
+	if categoryID == "" {
+		suggestion, err := s.suggestCategoryForEntry(
+			ctx,
+			groupID,
+			createdByUserID,
+			entryType,
+			accountID,
+			merchant,
+			strings.TrimSpace(req.Note),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if suggestion != nil && strings.TrimSpace(suggestion.CategoryID) != "" {
+			categoryID = strings.TrimSpace(suggestion.CategoryID)
+			metadata["categorySource"] = suggestion.Source
+			metadata["categoryConfidence"] = suggestion.Confidence
+		} else {
+			fallbackCategory, err := s.findOrCreateHouseholdCategoryByType(ctx, groupID, createdByUserID, entryType)
+			if err != nil {
+				return nil, err
+			}
+			categoryID = fallbackCategory.ID
+			metadata["categorySource"] = "fallback"
+			metadata["categoryConfidence"] = 0.2
+		}
+	}
+
+	categoryMeta, err := s.findCategoryForUser(ctx, groupID, categoryID, createdByUserID)
+	if err != nil {
+		if providedCategoryID {
+			return nil, err
+		}
+		fallbackCategory, fallbackErr := s.findOrCreateHouseholdCategoryByType(ctx, groupID, createdByUserID, entryType)
+		if fallbackErr != nil {
+			return nil, fallbackErr
+		}
+		categoryID = fallbackCategory.ID
+		metadata["categorySource"] = "fallback"
+		metadata["categoryConfidence"] = 0.2
+		categoryMeta, err = s.findCategoryForUser(ctx, groupID, categoryID, createdByUserID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if categoryMeta.Type != "" && categoryMeta.Type != entryType {
+		return nil, fmt.Errorf("category type mismatch: category is %s but entry is %s", categoryMeta.Type, entryType)
 	}
 
 	occurredOn, err := normalizeDate(req.OccurredOn)
@@ -399,15 +437,15 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 	expense := &dao.ExpenseEntry{
 		ID:         id,
 		GroupID:    groupID,
-		AccountID:  strings.TrimSpace(req.AccountID),
-		CategoryID: strings.TrimSpace(req.CategoryID),
+		AccountID:  accountID,
+		CategoryID: categoryID,
 		Type:       entryType,
 		Amount:     req.Amount,
 		Currency:   currencyCode,
 		OccurredOn: occurredOn,
 		Merchant:   merchant,
 		Note:       strings.TrimSpace(req.Note),
-		Metadata:   normalizeMetadata(req.Metadata),
+		Metadata:   metadata,
 		CreatedBy:  createdBy,
 		CreatedAt:  now,
 		UpdatedAt:  now,
@@ -417,7 +455,10 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 		if err := tx.Table((dao.ExpenseEntry{}).TableName()).Create(expense).Error; err != nil {
 			return err
 		}
-		return upsertMerchant(tx, merchantFromEntry(groupID, *expense, now))
+		if err := upsertMerchant(tx, merchantFromEntry(groupID, *expense, now)); err != nil {
+			return err
+		}
+		return s.learnMerchantCategory(tx, groupID, expense.Merchant, expense.Type, expense.CategoryID, 1.0, "learned", now)
 	})
 	if err != nil {
 		return nil, err
@@ -556,7 +597,10 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 			return err
 		}
 
-		return upsertMerchant(tx, merchantFromEntry(groupID, next, now))
+		if err := upsertMerchant(tx, merchantFromEntry(groupID, next, now)); err != nil {
+			return err
+		}
+		return s.learnMerchantCategory(tx, groupID, next.Merchant, next.Type, next.CategoryID, 1.0, "learned", now)
 	})
 	if err != nil {
 		return nil, err
