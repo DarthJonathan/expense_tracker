@@ -136,9 +136,13 @@ func Migrate(db *gorm.DB) error {
 		fmt.Sprintf(`create unique index if not exists expense_merchants_group_normalized_name_uidx
 			on %s (group_id, normalized_name)`,
 			tables["merchants"]),
+		fmt.Sprintf(
+			"drop index if exists %s.%s",
+			quoteIdentifier(schema),
+			quoteIdentifier("expense_merchant_category_maps_group_merchant_type_uidx"),
+		),
 		fmt.Sprintf(`create unique index if not exists expense_merchant_category_maps_group_merchant_type_uidx
-			on %s (group_id, normalized_merchant, entry_type)
-			where deleted_at is null`,
+			on %s (group_id, normalized_merchant, entry_type)`,
 			tables["merchantCategoryMaps"]),
 		fmt.Sprintf(`create index if not exists expense_merchant_category_maps_merchant_trgm_idx
 			on %s using gin (normalized_merchant gin_trgm_ops)`,

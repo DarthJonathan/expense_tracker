@@ -139,8 +139,7 @@ create unique index if not exists expense_merchants_group_normalized_name_uidx
 on spendit.expense_merchants (group_id, normalized_name);
 
 create unique index if not exists expense_merchant_category_maps_group_merchant_type_uidx
-on spendit.expense_merchant_category_maps (group_id, normalized_merchant, entry_type)
-where deleted_at is null;
+on spendit.expense_merchant_category_maps (group_id, normalized_merchant, entry_type);
 
 create index if not exists expense_merchant_category_maps_merchant_trgm_idx
 on spendit.expense_merchant_category_maps using gin (normalized_merchant gin_trgm_ops);
