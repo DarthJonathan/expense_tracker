@@ -54,6 +54,10 @@ type ExpenseEntry struct {
 	Type       string         `gorm:"column:type;type:text;not null;check:type in ('expense','income')" json:"type"`
 	Amount     int            `gorm:"column:amount;not null;check:amount >= 0" json:"amount"`
 	Currency   string         `gorm:"column:currency;type:text;not null;default:'SGD'" json:"currency"`
+	BaseAmount int            `gorm:"column:base_amount;not null;default:0" json:"baseAmount"`
+	BaseCurrency string       `gorm:"column:base_currency;type:text;not null;default:'SGD'" json:"baseCurrency"`
+	FxRate     float64        `gorm:"column:fx_rate;type:numeric(20,10);not null;default:1" json:"fxRate"`
+	FxRateDate string         `gorm:"column:fx_rate_date;type:date;not null" json:"fxRateDate"`
 	OccurredOn string         `gorm:"column:occurred_on;type:date;not null" json:"occurredOn"`
 	Merchant   string         `gorm:"column:merchant;type:text;not null" json:"merchant"`
 	Note       string         `gorm:"column:note;type:text;not null;default:''" json:"note"`

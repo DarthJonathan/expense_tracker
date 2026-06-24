@@ -6,6 +6,7 @@ type SyncSettingsRequest struct {
 	ID            string  `json:"id,omitempty"`
 	ActiveGroupID string  `json:"activeGroupId"`
 	DeviceUserID  string  `json:"deviceUserId"`
+	BaseCurrency  string  `json:"baseCurrency,omitempty"`
 	LastSyncedAt  *string `json:"lastSyncedAt,omitempty"`
 }
 

@@ -54,6 +54,9 @@ func Migrate(db *gorm.DB) error {
 			add column if not exists group_id uuid references %s(id) on delete set null`,
 			dao.QualifiedTable("expense_users"),
 			dao.QualifiedTable("expense_groups")),
+		fmt.Sprintf(`alter table %s
+			add column if not exists base_currency text not null default 'SGD'`,
+			dao.QualifiedTable("expense_users")),
 		fmt.Sprintf(`update %s u
 			set group_id = g.id
 			from (
@@ -190,9 +193,33 @@ func Migrate(db *gorm.DB) error {
 		fmt.Sprintf(`alter table %s
 			add column if not exists metadata jsonb not null default '{}'::jsonb`,
 			tables["entries"]),
+		fmt.Sprintf(`alter table %s
+			add column if not exists base_amount integer not null default 0`,
+			tables["entries"]),
+		fmt.Sprintf(`alter table %s
+			add column if not exists base_currency text not null default 'SGD'`,
+			tables["entries"]),
+		fmt.Sprintf(`alter table %s
+			add column if not exists fx_rate numeric(20,10) not null default 1`,
+			tables["entries"]),
+		fmt.Sprintf(`alter table %s
+			add column if not exists fx_rate_date date`,
+			tables["entries"]),
 		`update ` + tables["entries"] + `
-			set currency = 'SGD'
-			where coalesce(currency, '') <> 'SGD'`,
+			set currency = upper(coalesce(nullif(currency, ''), 'SGD'))`,
+		`update ` + tables["entries"] + `
+			set base_amount = amount
+			where base_amount = 0 and amount > 0`,
+		`update ` + tables["entries"] + `
+			set base_currency = upper(coalesce(nullif(base_currency, ''), nullif(currency, ''), 'SGD'))`,
+		`update ` + tables["entries"] + `
+			set fx_rate = 1
+			where fx_rate is null or fx_rate <= 0`,
+		`update ` + tables["entries"] + `
+			set fx_rate_date = coalesce(fx_rate_date, occurred_on, current_date)`,
+		fmt.Sprintf(`alter table %s
+			alter column fx_rate_date set not null`,
+			tables["entries"]),
 	}
 
 	for _, statement := range indexes {

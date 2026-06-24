@@ -45,6 +45,19 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 		if err != nil {
 			return fmt.Errorf("resolve user group: %w", err)
 		}
+		baseCurrency, err := normalizeCurrencyCode(req.Settings.BaseCurrency)
+		if err != nil {
+			baseCurrency = "SGD"
+		}
+		if err := tx.Model(&dao.ExpenseUser{}).
+			Where("id = ?::uuid", authUserID).
+			Updates(map[string]any{
+				"base_currency": baseCurrency,
+				"updated_at":    now,
+			}).Error; err != nil {
+			return fmt.Errorf("update base currency: %w", err)
+		}
+
 		groupID := resolution.GroupID
 		sourceGroupID := clientGroupID
 		if sourceGroupID == "" {
@@ -124,6 +137,13 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 		result.Entries = entries
 		result.Adjustments = adjustments
 		result.Merchants = merchants
+		result.Settings = response.SyncSettingsData{
+			ID:            req.Settings.ID,
+			ActiveGroupID: groupID,
+			DeviceUserID:  req.Settings.DeviceUserID,
+			BaseCurrency:  baseCurrency,
+			LastSyncedAt:  now.Format(time.RFC3339Nano),
+		}
 		result.SyncedAt = now.Format(time.RFC3339Nano)
 
 		return nil
@@ -360,9 +380,11 @@ func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) error {
 	return tx.Exec(fmt.Sprintf(`
 		insert into %s (
 			id, group_id, account_id, category_id, type, amount, currency, occurred_on,
+			base_amount, base_currency, fx_rate, fx_rate_date,
 			merchant, note, metadata, created_by, created_at, updated_at, deleted_at
 		) values (
 			?::uuid, ?::uuid, ?::uuid, ?::uuid, ?, ?, ?, ?::date,
+			?, ?, ?, ?::date,
 			?, ?, ?::jsonb, ?::uuid, ?, ?, ?
 		)
 		on conflict (id) do update set
@@ -373,6 +395,10 @@ func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) error {
 			amount = excluded.amount,
 			currency = excluded.currency,
 			occurred_on = excluded.occurred_on,
+			base_amount = excluded.base_amount,
+			base_currency = excluded.base_currency,
+			fx_rate = excluded.fx_rate,
+			fx_rate_date = excluded.fx_rate_date,
 			merchant = excluded.merchant,
 			note = excluded.note,
 			metadata = excluded.metadata,
@@ -388,6 +414,10 @@ func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) error {
 		entry.Amount,
 		normalizeEntryCurrency(entry.Currency),
 		entry.OccurredOn,
+		normalizeBaseAmount(entry),
+		normalizeBaseCurrency(entry),
+		normalizeFxRate(entry.FxRate),
+		normalizeFxRateDate(entry),
 		entry.Merchant,
 		entry.Note,
 		string(metadataJSON),
@@ -466,18 +496,54 @@ func upsertMerchant(tx *gorm.DB, merchant dao.ExpenseMerchant) error {
 		"deleted_at":      merchant.DeletedAt,
 	}
 
-	return tx.Table((dao.ExpenseMerchant{}).TableName()).
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "group_id"}, {Name: "normalized_name"}},
-			DoUpdates: clause.Assignments(map[string]any{
+	existing := &dao.ExpenseMerchant{}
+	err := tx.Raw(fmt.Sprintf(`
+		select
+			id::text as id,
+			group_id::text as group_id,
+			name,
+			normalized_name,
+			usage_count,
+			last_used_at,
+			created_at,
+			updated_at,
+			deleted_at
+		from %s
+		where group_id = ?::uuid and normalized_name = ?
+		order by updated_at desc
+		limit 1
+	`, dao.QualifiedTable("expense_merchants")), merchant.GroupID, normalizedName).Scan(existing).Error
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(existing.ID) != "" {
+		return tx.Table((dao.ExpenseMerchant{}).TableName()).
+			Where("id = ?::uuid", existing.ID).
+			Updates(map[string]any{
 				"name":         row["name"],
-				"usage_count":  gorm.Expr(fmt.Sprintf("greatest(%s.usage_count, excluded.usage_count)", dao.QualifiedTable("expense_merchants"))),
-				"last_used_at": gorm.Expr(fmt.Sprintf("coalesce(greatest(%s.last_used_at, excluded.last_used_at), %s.last_used_at, excluded.last_used_at)", dao.QualifiedTable("expense_merchants"), dao.QualifiedTable("expense_merchants"))),
+				"usage_count":  gorm.Expr(fmt.Sprintf("greatest(%s.usage_count, ?)", dao.QualifiedTable("expense_merchants")), usageCount),
+				"last_used_at": gorm.Expr(fmt.Sprintf("coalesce(greatest(%s.last_used_at, ?), %s.last_used_at, ?)", dao.QualifiedTable("expense_merchants"), dao.QualifiedTable("expense_merchants")), row["last_used_at"], row["last_used_at"]),
 				"updated_at":   row["updated_at"],
 				"deleted_at":   row["deleted_at"],
-			}),
-		}).
-		Create(row).Error
+			}).Error
+	}
+
+	if err := tx.Table((dao.ExpenseMerchant{}).TableName()).Create(row).Error; err != nil {
+		if isPostgresErrorCode(err, "23505") {
+			return tx.Table((dao.ExpenseMerchant{}).TableName()).
+				Where("group_id = ?::uuid and normalized_name = ?", merchant.GroupID, normalizedName).
+				Updates(map[string]any{
+					"name":         row["name"],
+					"usage_count":  gorm.Expr(fmt.Sprintf("%s.usage_count + 1", dao.QualifiedTable("expense_merchants"))),
+					"last_used_at": row["last_used_at"],
+					"updated_at":   row["updated_at"],
+					"deleted_at":   row["deleted_at"],
+				}).Error
+		}
+		return err
+	}
+	return nil
 }
 
 func pullGroups(tx *gorm.DB, groupID string) ([]dao.ExpenseGroup, error) {
@@ -565,6 +631,10 @@ func pullEntries(tx *gorm.DB, groupID string) ([]dao.ExpenseEntry, error) {
 			type,
 			amount,
 			currency,
+			base_amount,
+			base_currency,
+			fx_rate,
+			to_char(fx_rate_date, 'YYYY-MM-DD') as fx_rate_date,
 			to_char(occurred_on, 'YYYY-MM-DD') as occurred_on,
 			merchant,
 			note,
@@ -753,6 +823,40 @@ func normalizeMerchantName(value string) string {
 }
 
 func normalizeEntryCurrency(value string) string {
-	_ = strings.TrimSpace(value)
-	return "SGD"
+	normalized, err := normalizeCurrencyCode(value)
+	if err != nil {
+		return "SGD"
+	}
+	return normalized
+}
+
+func normalizeBaseAmount(entry dao.ExpenseEntry) int {
+	if entry.BaseAmount > 0 {
+		return entry.BaseAmount
+	}
+	return entry.Amount
+}
+
+func normalizeBaseCurrency(entry dao.ExpenseEntry) string {
+	if normalized, err := normalizeCurrencyCode(entry.BaseCurrency); err == nil {
+		return normalized
+	}
+	return normalizeEntryCurrency(entry.Currency)
+}
+
+func normalizeFxRate(value float64) float64 {
+	if value <= 0 {
+		return 1
+	}
+	return value
+}
+
+func normalizeFxRateDate(entry dao.ExpenseEntry) string {
+	if normalized, err := normalizeDate(entry.FxRateDate); err == nil {
+		return normalized
+	}
+	if normalized, err := normalizeDate(entry.OccurredOn); err == nil {
+		return normalized
+	}
+	return time.Now().UTC().Format("2006-01-02")
 }

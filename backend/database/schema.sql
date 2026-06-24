@@ -8,6 +8,7 @@ create table if not exists spendit.expense_users (
 	email text not null unique,
 	password_hash text not null,
 	display_name text not null,
+	base_currency text not null default 'SGD',
 	created_at timestamptz not null default now(),
 	updated_at timestamptz not null default now(),
 	deleted_at timestamptz
@@ -62,6 +63,10 @@ create table if not exists spendit.expense_entries (
 	type text not null check (type in ('expense', 'income')),
 	amount integer not null check (amount >= 0),
 	currency text not null default 'SGD',
+	base_amount integer not null default 0,
+	base_currency text not null default 'SGD',
+	fx_rate numeric(20,10) not null default 1,
+	fx_rate_date date not null default current_date,
 	occurred_on date not null,
 	merchant text not null,
 	note text not null default '',

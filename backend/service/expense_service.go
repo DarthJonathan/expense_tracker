@@ -18,10 +18,14 @@ import (
 
 type ExpenseService struct {
 	DB *gorm.DB
+	FX *FXService
 }
 
 func NewExpenseService(db *gorm.DB) *ExpenseService {
-	return &ExpenseService{DB: db}
+	return &ExpenseService{
+		DB: db,
+		FX: NewFXService(""),
+	}
 }
 
 func (s *ExpenseService) ResolveOrCreateUserGroup(ctx context.Context, userID string) (*dao.ExpenseGroup, error) {
@@ -325,13 +329,17 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 		metadata["amountRaw"] = strings.TrimSpace(string(req.Amount))
 		amount = 0
 	}
+	baseCurrency, err := s.resolveUserBaseCurrency(ctx, trimmedUserID)
+	if err != nil {
+		return nil, err
+	}
 
 	return s.CreateExpense(ctx, group.ID, trimmedUserID, &request.CreateExpenseRequest{
 		AccountID:  account.ID,
 		CategoryID: "",
 		Type:       entryType,
 		Amount:     amount,
-		Currency:   "SGD",
+		Currency:   baseCurrency,
 		OccurredOn: occurredOn,
 		Merchant:   merchant,
 		Note:       "",
@@ -422,6 +430,11 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 	if err != nil {
 		return nil, err
 	}
+	baseCurrency, err := s.resolveUserBaseCurrency(ctx, createdByUserID)
+	if err != nil {
+		return nil, err
+	}
+	baseAmount, fxRate, fxRateDate := s.convertToBaseAmount(ctx, req.Amount, currencyCode, baseCurrency, occurredOn)
 
 	id, err := uuid.GenerateUUID()
 	if err != nil {
@@ -442,6 +455,10 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 		Type:       entryType,
 		Amount:     req.Amount,
 		Currency:   currencyCode,
+		BaseAmount: baseAmount,
+		BaseCurrency: baseCurrency,
+		FxRate:     fxRate,
+		FxRateDate: fxRateDate,
 		OccurredOn: occurredOn,
 		Merchant:   merchant,
 		Note:       strings.TrimSpace(req.Note),
@@ -483,6 +500,10 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 			type,
 			amount,
 			currency,
+			base_amount,
+			base_currency,
+			fx_rate,
+			to_char(fx_rate_date, 'YYYY-MM-DD') as fx_rate_date,
 			to_char(occurred_on, 'YYYY-MM-DD') as occurred_on,
 			merchant,
 			note,
@@ -579,6 +600,15 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 
 	now := time.Now().UTC()
 	next.UpdatedAt = now
+	baseCurrency, err := s.resolveUserBaseCurrency(ctx, authUserID)
+	if err != nil {
+		return nil, err
+	}
+	baseAmount, fxRate, fxRateDate := s.convertToBaseAmount(ctx, next.Amount, next.Currency, baseCurrency, next.OccurredOn)
+	next.BaseAmount = baseAmount
+	next.BaseCurrency = baseCurrency
+	next.FxRate = fxRate
+	next.FxRateDate = fxRateDate
 
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Table((dao.ExpenseEntry{}).TableName()).
@@ -589,6 +619,10 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 				"type":        next.Type,
 				"amount":      next.Amount,
 				"currency":    next.Currency,
+				"base_amount": next.BaseAmount,
+				"base_currency": next.BaseCurrency,
+				"fx_rate":     next.FxRate,
+				"fx_rate_date": next.FxRateDate,
 				"occurred_on": next.OccurredOn,
 				"merchant":    next.Merchant,
 				"note":        next.Note,
@@ -620,6 +654,10 @@ func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *
 		e.type,
 		e.amount,
 		e.currency,
+		e.base_amount,
+		e.base_currency,
+		e.fx_rate,
+		to_char(e.fx_rate_date, 'YYYY-MM-DD') as fx_rate_date,
 		to_char(e.occurred_on, 'YYYY-MM-DD') as occurred_on,
 		e.merchant,
 		e.note,
@@ -654,6 +692,7 @@ func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *
 				lower(e.currency) like ? or
 				to_char(e.occurred_on, 'YYYY-MM-DD') like ? or
 				cast(e.amount as text) like ? or
+				cast(e.base_amount as text) like ? or
 				exists (
 					select 1
 					from %s a
@@ -667,7 +706,7 @@ func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *
 			`,
 				dao.QualifiedTable("expense_accounts"),
 				dao.QualifiedTable("expense_categories")),
-				pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
+				pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
 		}
 
 		limit := req.Limit
@@ -876,8 +915,19 @@ func normalizeAutomationStringAmount(value string) (int, error) {
 }
 
 func normalizeCurrencyCode(value string) (string, error) {
-	_ = strings.TrimSpace(value)
-	return "SGD", nil
+	trimmed := strings.ToUpper(strings.TrimSpace(value))
+	if trimmed == "" {
+		return "SGD", nil
+	}
+	if len(trimmed) != 3 {
+		return "", fmt.Errorf("currency must be a 3-letter ISO code")
+	}
+	for _, r := range trimmed {
+		if r < 'A' || r > 'Z' {
+			return "", fmt.Errorf("currency must be a 3-letter ISO code")
+		}
+	}
+	return trimmed, nil
 }
 
 func normalizeIcon(value string, fallback string) string {
@@ -905,6 +955,78 @@ func normalizeMetadata(value map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	return normalized
+}
+
+func (s *ExpenseService) resolveUserBaseCurrency(ctx context.Context, userID string) (string, error) {
+	trimmed := strings.TrimSpace(userID)
+	if trimmed == "" {
+		return "SGD", nil
+	}
+
+	var base string
+	err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+		select base_currency
+		from %s
+		where id = ?::uuid and deleted_at is null
+		limit 1
+	`, dao.QualifiedTable("expense_users")), trimmed).Scan(&base).Error
+	if err != nil {
+		return "", err
+	}
+
+	code, err := normalizeCurrencyCode(base)
+	if err != nil {
+		return "SGD", nil
+	}
+	return code, nil
+}
+
+func (s *ExpenseService) convertToBaseAmount(
+	ctx context.Context,
+	amount int,
+	entryCurrency string,
+	baseCurrency string,
+	occurredOn string,
+) (baseAmount int, fxRate float64, fxRateDate string) {
+	if amount <= 0 {
+		return 0, 1.0, occurredOn
+	}
+
+	entryCode, err := normalizeCurrencyCode(entryCurrency)
+	if err != nil {
+		entryCode = "SGD"
+	}
+	baseCode, err := normalizeCurrencyCode(baseCurrency)
+	if err != nil {
+		baseCode = "SGD"
+	}
+
+	normalizedDate, err := normalizeDate(occurredOn)
+	if err != nil {
+		normalizedDate = time.Now().UTC().Format("2006-01-02")
+	}
+
+	if entryCode == baseCode {
+		return amount, 1.0, normalizedDate
+	}
+
+	if s.FX == nil {
+		return amount, 1.0, normalizedDate
+	}
+
+	rate, rateDate, err := s.FX.ResolveRate(ctx, entryCode, baseCode, normalizedDate)
+	if err != nil || rate <= 0 {
+		return amount, 1.0, normalizedDate
+	}
+
+	converted := int(math.Round(float64(amount) * rate))
+	if converted < 0 {
+		converted = 0
+	}
+	if strings.TrimSpace(rateDate) == "" {
+		rateDate = normalizedDate
+	}
+	return converted, rate, rateDate
 }
 
 type categoryMeta struct {
