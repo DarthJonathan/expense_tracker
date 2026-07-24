@@ -66,6 +66,7 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 		acceptIncoming := !(resolution.HadStoredGroup && sourceGroupID != groupID)
 
 		if acceptIncoming {
+			categorizer := NewExpenseService(tx)
 			for _, account := range filterAccountsByGroup(req.Accounts, sourceGroupID, groupID) {
 				if err := upsertAccount(tx, account); err != nil {
 					return fmt.Errorf("upsert account %s: %w", account.ID, err)
@@ -85,6 +86,16 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 
 				if err := upsertMerchant(tx, merchantFromEntry(groupID, entry, now)); err != nil {
 					return fmt.Errorf("upsert merchant from entry %s: %w", entry.ID, err)
+				}
+
+				if entryCategorySource(entry.Metadata) == "fallback" {
+					if err := discardFallbackMerchantCategory(tx, groupID, entry.Merchant, entry.Type, entry.CategoryID, now); err != nil {
+						return fmt.Errorf("discard fallback category from entry %s: %w", entry.ID, err)
+					}
+				} else if shouldLearnSyncedEntry(entry) {
+					if err := categorizer.learnMerchantCategory(tx, groupID, entry.Merchant, entry.Type, entry.CategoryID, 1.0, "manual", now); err != nil {
+						return fmt.Errorf("learn category from entry %s: %w", entry.ID, err)
+					}
 				}
 			}
 

@@ -49,6 +49,15 @@ button {
 	justify-content: center;
 }
 
+button:disabled {
+	cursor: not-allowed;
+	opacity: 0.65;
+}
+
+button .spinning {
+	animation: spin 0.9s linear infinite;
+}
+
 input,
 select {
 	background: var(--field, #ffffff);
@@ -486,6 +495,45 @@ form {
 	display: grid;
 	gap: 0.8rem;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.account-status-toggle {
+	align-items: center;
+	background: color-mix(in srgb, var(--muted) 7%, var(--field));
+	border: 1px solid var(--line);
+	border-radius: 16px;
+	cursor: pointer;
+	display: grid;
+	gap: 0.75rem;
+	grid-template-columns: auto 1fr;
+	padding: 0.8rem 1rem;
+}
+
+.account-status-toggle input[type='checkbox'] {
+	accent-color: var(--primary);
+	height: 1.2rem;
+	min-height: 0;
+	outline: 0;
+	padding: 0;
+	width: 1.2rem;
+}
+
+.account-status-toggle span {
+	display: grid;
+	gap: 0.15rem;
+}
+
+.account-status-toggle strong {
+	color: var(--ink);
+}
+
+.account-status-toggle small {
+	color: var(--muted);
+	font-weight: 700;
+}
+
+.inactive-account {
+	opacity: 0.62;
 }
 
 .entry-type-tabs {
@@ -1890,13 +1938,17 @@ body {
 
 	.desktop-search-control {
 		align-items: center;
+		background: var(--panel);
+		border-radius: var(--radius-sm);
+		color: var(--muted);
 		display: inline-flex;
 		gap: 0.45rem;
+		min-height: 2.8rem;
 	}
 
 	.desktop-search-control.open {
 		border: 1px solid var(--line);
-		padding-left: 0.55rem;
+		padding: 0.15rem 0.25rem 0.15rem 0.7rem;
 	}
 
 	.desktop-search-control input {
@@ -1905,14 +1957,43 @@ body {
 		color: var(--ink);
 		font-size: 0.9rem;
 		font-weight: 700;
-		min-width: 22rem;
+		min-height: 2.35rem;
+		min-width: 12rem;
 		outline: 0;
+		padding: 0.4rem 0.2rem;
+		width: min(22rem, 34vw);
+	}
+
+	.desktop-actions .desktop-search-trigger,
+	.desktop-actions .desktop-search-close {
+		flex: 0 0 auto;
+		justify-content: center;
+	}
+
+	.desktop-actions .desktop-search-trigger {
+		padding: 0.6rem;
+		width: 2.8rem;
+	}
+
+	.desktop-actions .desktop-search-close {
+		font-size: 1.35rem;
+		line-height: 1;
+		min-height: 2.35rem;
+		padding: 0.3rem;
+		width: 2.35rem;
 	}
 
 	.desktop-actions button,
 	.desktop-filter-row button,
 	.desktop-card-head button {
 		border-color: var(--line);
+	}
+
+	.desktop-card-head > button {
+		flex: 0 0 auto;
+		justify-content: center;
+		margin-left: auto;
+		width: auto;
 	}
 
 	.desktop-kpis {
@@ -2299,6 +2380,7 @@ body {
 	.desktop-account-list article,
 	.desktop-account-list .desktop-account-row,
 	.desktop-table article,
+	.desktop-table .desktop-transaction-row,
 	.desktop-table-head {
 		align-items: center;
 		border-top: 1px solid var(--line);
@@ -2322,6 +2404,27 @@ body {
 		grid-template-columns: auto 1fr auto;
 		text-align: left;
 		width: 100%;
+	}
+
+	.desktop-table .desktop-transaction-row {
+		background: transparent;
+		border-bottom: 0;
+		border-left: 0;
+		border-radius: 0;
+		border-right: 0;
+		color: var(--ink);
+		cursor: pointer;
+		text-align: left;
+		width: 100%;
+	}
+
+	.desktop-table .desktop-transaction-row:hover {
+		background: color-mix(in srgb, var(--panel-hover) 52%, transparent);
+	}
+
+	.desktop-table .desktop-transaction-row:focus-visible {
+		outline: 2px solid var(--primary);
+		outline-offset: -2px;
 	}
 
 	.desktop-account-list .desktop-account-row:hover {
@@ -2371,6 +2474,7 @@ body {
 	}
 
 	.desktop-table article,
+	.desktop-table .desktop-transaction-row,
 	.desktop-table-head {
 		grid-template-columns: 7rem 1.2fr 1fr 1fr auto;
 		min-width: 46rem;

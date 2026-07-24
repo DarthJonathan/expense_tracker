@@ -1,6 +1,10 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"expense-tracker/backend/dao"
+)
 
 func TestNormalizeMerchantKey(t *testing.T) {
 	t.Parallel()
@@ -112,6 +116,52 @@ func TestMatchesRule(t *testing.T) {
 			got := matchesRule(tt.matchKind, tt.pattern, tt.target)
 			if got != tt.want {
 				t.Fatalf("matchesRule(%q, %q, %q) = %v, want %v", tt.matchKind, tt.pattern, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFallbackCategoryName(t *testing.T) {
+	t.Parallel()
+
+	if got := fallbackCategoryName("expense"); got != "Other expense" {
+		t.Fatalf("fallbackCategoryName(expense) = %q, want %q", got, "Other expense")
+	}
+	if got := fallbackCategoryName("income"); got != "Income" {
+		t.Fatalf("fallbackCategoryName(income) = %q, want %q", got, "Income")
+	}
+}
+
+func TestShouldLearnSyncedEntry(t *testing.T) {
+	t.Parallel()
+
+	base := dao.ExpenseEntry{
+		Merchant:   "Toast Box",
+		CategoryID: "category-id",
+		Type:       "expense",
+	}
+
+	tests := []struct {
+		name     string
+		metadata map[string]any
+		want     bool
+	}{
+		{name: "legacy manual entry", metadata: nil, want: true},
+		{name: "explicit manual entry", metadata: map[string]any{"categorySource": "manual"}, want: true},
+		{name: "automatic fallback", metadata: map[string]any{"categorySource": "fallback"}, want: false},
+		{name: "automatic exact suggestion", metadata: map[string]any{"categorySource": "exact"}, want: false},
+		{name: "automatic fuzzy suggestion", metadata: map[string]any{"categorySource": "fuzzy"}, want: false},
+		{name: "automatic rule suggestion", metadata: map[string]any{"categorySource": "rule"}, want: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			entry := base
+			entry.Metadata = tt.metadata
+			if got := shouldLearnSyncedEntry(entry); got != tt.want {
+				t.Fatalf("shouldLearnSyncedEntry() = %v, want %v", got, tt.want)
 			}
 		})
 	}

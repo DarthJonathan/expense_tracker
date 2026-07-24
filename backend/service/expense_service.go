@@ -371,6 +371,10 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 	categoryID := strings.TrimSpace(req.CategoryID)
 	providedCategoryID := categoryID != ""
 	metadata := normalizeMetadata(req.Metadata)
+	if providedCategoryID {
+		metadata["categorySource"] = "manual"
+		metadata["categoryConfidence"] = 1.0
+	}
 
 	if categoryID == "" {
 		suggestion, err := s.suggestCategoryForEntry(
@@ -448,24 +452,24 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 	}
 
 	expense := &dao.ExpenseEntry{
-		ID:         id,
-		GroupID:    groupID,
-		AccountID:  accountID,
-		CategoryID: categoryID,
-		Type:       entryType,
-		Amount:     req.Amount,
-		Currency:   currencyCode,
-		BaseAmount: baseAmount,
+		ID:           id,
+		GroupID:      groupID,
+		AccountID:    accountID,
+		CategoryID:   categoryID,
+		Type:         entryType,
+		Amount:       req.Amount,
+		Currency:     currencyCode,
+		BaseAmount:   baseAmount,
 		BaseCurrency: baseCurrency,
-		FxRate:     fxRate,
-		FxRateDate: fxRateDate,
-		OccurredOn: occurredOn,
-		Merchant:   merchant,
-		Note:       strings.TrimSpace(req.Note),
-		Metadata:   metadata,
-		CreatedBy:  createdBy,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		FxRate:       fxRate,
+		FxRateDate:   fxRateDate,
+		OccurredOn:   occurredOn,
+		Merchant:     merchant,
+		Note:         strings.TrimSpace(req.Note),
+		Metadata:     metadata,
+		CreatedBy:    createdBy,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -475,7 +479,10 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 		if err := upsertMerchant(tx, merchantFromEntry(groupID, *expense, now)); err != nil {
 			return err
 		}
-		return s.learnMerchantCategory(tx, groupID, expense.Merchant, expense.Type, expense.CategoryID, 1.0, "learned", now)
+		if !providedCategoryID {
+			return nil
+		}
+		return s.learnMerchantCategory(tx, groupID, expense.Merchant, expense.Type, expense.CategoryID, 1.0, "manual", now)
 	})
 	if err != nil {
 		return nil, err
@@ -614,19 +621,19 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 		if err := tx.Table((dao.ExpenseEntry{}).TableName()).
 			Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", trimmedTransactionID, groupID).
 			Updates(map[string]any{
-				"account_id":  next.AccountID,
-				"category_id": next.CategoryID,
-				"type":        next.Type,
-				"amount":      next.Amount,
-				"currency":    next.Currency,
-				"base_amount": next.BaseAmount,
+				"account_id":    next.AccountID,
+				"category_id":   next.CategoryID,
+				"type":          next.Type,
+				"amount":        next.Amount,
+				"currency":      next.Currency,
+				"base_amount":   next.BaseAmount,
 				"base_currency": next.BaseCurrency,
-				"fx_rate":     next.FxRate,
-				"fx_rate_date": next.FxRateDate,
-				"occurred_on": next.OccurredOn,
-				"merchant":    next.Merchant,
-				"note":        next.Note,
-				"updated_at":  next.UpdatedAt,
+				"fx_rate":       next.FxRate,
+				"fx_rate_date":  next.FxRateDate,
+				"occurred_on":   next.OccurredOn,
+				"merchant":      next.Merchant,
+				"note":          next.Note,
+				"updated_at":    next.UpdatedAt,
 			}).Error; err != nil {
 			return err
 		}
@@ -634,7 +641,7 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 		if err := upsertMerchant(tx, merchantFromEntry(groupID, next, now)); err != nil {
 			return err
 		}
-		return s.learnMerchantCategory(tx, groupID, next.Merchant, next.Type, next.CategoryID, 1.0, "learned", now)
+		return s.learnMerchantCategory(tx, groupID, next.Merchant, next.Type, next.CategoryID, 1.0, "manual", now)
 	})
 	if err != nil {
 		return nil, err
@@ -1179,6 +1186,7 @@ func (s *ExpenseService) findOrCreateAccountByRef(ctx context.Context, groupID s
 
 func (s *ExpenseService) findOrCreateHouseholdCategoryByType(ctx context.Context, groupID string, authUserID string, entryType string) (*dao.ExpenseCategory, error) {
 	normalizedType := normalizeCategoryType(entryType, "")
+	categoryName := fallbackCategoryName(normalizedType)
 
 	category := &dao.ExpenseCategory{}
 	if err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
@@ -1196,20 +1204,19 @@ func (s *ExpenseService) findOrCreateHouseholdCategoryByType(ctx context.Context
 			updated_at,
 			deleted_at
 		from %s
-		where group_id = ?::uuid and type = ? and scope = 'household' and deleted_at is null
+		where group_id = ?::uuid
+			and type = ?
+			and scope = 'household'
+			and lower(name) = lower(?)
+			and deleted_at is null
 		order by updated_at desc
 		limit 1
-	`, dao.QualifiedTable("expense_categories")), groupID, normalizedType).Scan(category).Error; err != nil {
+	`, dao.QualifiedTable("expense_categories")), groupID, normalizedType, categoryName).Scan(category).Error; err != nil {
 		return nil, err
 	}
 
 	if strings.TrimSpace(category.ID) != "" {
 		return category, nil
-	}
-
-	categoryName := "Other expense"
-	if normalizedType == "income" {
-		categoryName = "Income"
 	}
 
 	created, err := s.CreateCategory(ctx, groupID, authUserID, &request.CreateCategoryRequest{
@@ -1223,6 +1230,13 @@ func (s *ExpenseService) findOrCreateHouseholdCategoryByType(ctx context.Context
 	}
 
 	return created, nil
+}
+
+func fallbackCategoryName(entryType string) string {
+	if normalizeCategoryType(entryType, "") == "income" {
+		return "Income"
+	}
+	return "Other expense"
 }
 
 func normalizeAccountTypeFromRef(value string) string {

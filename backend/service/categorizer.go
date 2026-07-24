@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const fuzzyMerchantThreshold = 0.42
+const fuzzyMerchantThreshold = 0.65
 
 type merchantCategorySuggestion struct {
 	CategoryID string
@@ -36,6 +36,25 @@ func (s *ExpenseService) suggestCategoryForEntry(
 	merchantKey := normalizeMerchantKey(merchant)
 	noteKey := strings.ToLower(strings.TrimSpace(note))
 
+	if fromRules, err := s.lookupCategoryRules(ctx, groupID, normalizedType, accountID, merchantKey, noteKey); err != nil {
+		return nil, err
+	} else if fromRules != nil {
+		log.WithFields(log.Fields{
+			"groupId":      groupID,
+			"userId":       authUserID,
+			"merchant":     merchant,
+			"merchantKey":  merchantKey,
+			"entryType":    normalizedType,
+			"categoryId":   fromRules.CategoryID,
+			"confidence":   fromRules.Confidence,
+			"source":       fromRules.Source,
+			"stage":        "rules",
+			"accountId":    accountID,
+			"noteProvided": strings.TrimSpace(note) != "",
+		}).Info("categorizer selected category")
+		return fromRules, nil
+	}
+
 	if merchantKey != "" {
 		if fromMap, err := s.lookupMerchantCategoryMap(ctx, groupID, merchantKey, normalizedType); err != nil {
 			return nil, err
@@ -55,25 +74,6 @@ func (s *ExpenseService) suggestCategoryForEntry(
 			}).Info("categorizer selected category")
 			return fromMap, nil
 		}
-	}
-
-	if fromRules, err := s.lookupCategoryRules(ctx, groupID, normalizedType, accountID, merchantKey, noteKey); err != nil {
-		return nil, err
-	} else if fromRules != nil {
-		log.WithFields(log.Fields{
-			"groupId":      groupID,
-			"userId":       authUserID,
-			"merchant":     merchant,
-			"merchantKey":  merchantKey,
-			"entryType":    normalizedType,
-			"categoryId":   fromRules.CategoryID,
-			"confidence":   fromRules.Confidence,
-			"source":       fromRules.Source,
-			"stage":        "rules",
-			"accountId":    accountID,
-			"noteProvided": strings.TrimSpace(note) != "",
-		}).Info("categorizer selected category")
-		return fromRules, nil
 	}
 
 	if merchantKey != "" {
@@ -357,6 +357,51 @@ func (s *ExpenseService) learnMerchantCategory(
 	}).Info("categorizer learned merchant category mapping")
 
 	return nil
+}
+
+func discardFallbackMerchantCategory(
+	tx *gorm.DB,
+	groupID string,
+	merchant string,
+	entryType string,
+	categoryID string,
+	when time.Time,
+) error {
+	merchantKey := normalizeMerchantKey(merchant)
+	if merchantKey == "" || strings.TrimSpace(categoryID) == "" {
+		return nil
+	}
+
+	return tx.Table((dao.ExpenseMerchantCategoryMap{}).TableName()).
+		Where(`
+			group_id = ?::uuid
+			and normalized_merchant = ?
+			and entry_type = ?
+			and category_id = ?::uuid
+			and source = 'learned'
+			and deleted_at is null
+		`, groupID, merchantKey, normalizeCategoryType(entryType, ""), strings.TrimSpace(categoryID)).
+		Updates(map[string]any{
+			"updated_at": when,
+			"deleted_at": when,
+		}).Error
+}
+
+func entryCategorySource(metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	source, _ := metadata["categorySource"].(string)
+	return strings.ToLower(strings.TrimSpace(source))
+}
+
+func shouldLearnSyncedEntry(entry dao.ExpenseEntry) bool {
+	if entry.DeletedAt != nil || strings.TrimSpace(entry.Merchant) == "" || strings.TrimSpace(entry.CategoryID) == "" {
+		return false
+	}
+
+	source := entryCategorySource(entry.Metadata)
+	return source == "" || source == "manual" || source == "provided"
 }
 
 func normalizeMerchantKey(value string) string {

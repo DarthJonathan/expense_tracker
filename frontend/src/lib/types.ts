@@ -45,6 +45,7 @@ export interface LedgerEntry extends SyncableRecord {
 	occurredOn: string;
 	merchant: string;
 	note: string;
+	metadata?: Record<string, unknown>;
 	createdBy?: string | null;
 }
 

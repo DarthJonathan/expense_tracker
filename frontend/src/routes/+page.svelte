@@ -18,7 +18,7 @@
 	import { Collapsible, DatePicker, Meter, Tabs } from 'bits-ui';
 	import { parseDate, type DateValue } from '@internationalized/date';
 	import AppSelect from '$lib/components/AppSelect.svelte';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import { buildPeriodSummaries, getCurrentBalance, periodKey, readablePeriod } from '$lib/reporting';
 	import { finance } from '$lib/finance';
@@ -29,7 +29,7 @@
 	import { cents, currency, formatSignedCurrency, isActive, todayInputValue } from '$lib/utils';
 
 	type Screen = 'home' | 'review' | 'add' | 'transactions' | 'search' | 'transactionDetail' | 'settings';
-	type DesktopScreen = 'dashboard' | 'transactions' | 'accounts' | 'review' | 'settings' | 'add';
+	type DesktopScreen = 'dashboard' | 'transactions' | 'transactionDetail' | 'accounts' | 'review' | 'settings' | 'add';
 	type SettingsSubpage = 'overview' | 'accounts' | 'accountEdit' | 'categories' | 'categoryEdit' | 'adjustments';
 	type StatItem = { name: string; color: string; amount: number };
 	type BudgetComparisonItem = { id: string; name: string; spent: number; target: number; fillPercent: number };
@@ -49,6 +49,9 @@
 
 	let activeScreen: Screen = 'home';
 	let desktopScreen: DesktopScreen = 'dashboard';
+	let desktopTransactionDetailOrigin: 'dashboard' | 'transactions' = 'transactions';
+	let desktopSearchOpen = false;
+	let desktopSearchInput: HTMLInputElement | null = null;
 	let desktopAddAccountWizardOpen = false;
 	let desktopAddCategoryWizardOpen = false;
 	let transactionSearchQuery = '';
@@ -150,10 +153,11 @@
 
 	$: state = $finance;
 	$: activeGroup = state?.groups.find((group) => group.id === state.settings.activeGroupId);
-	$: accounts =
+	$: allAccounts =
 		state?.accounts
-			.filter((account) => account.groupId === state.settings.activeGroupId && isActive(account))
+			.filter((account) => account.groupId === state.settings.activeGroupId)
 			.map((account, index) => ({ ...account, color: displayColor(account.color, index) })) ?? [];
+	$: accounts = allAccounts.filter(isActive);
 	$: categories =
 		state?.categories
 			.filter((category) => category.groupId === state.settings.activeGroupId && isActive(category))
@@ -165,16 +169,35 @@
 				color: displayColor(category.color, index + 1)
 			}))
 			.filter((category) => isCategoryVisibleToUser(category, state?.settings.deviceUserId ?? '')) ?? [];
-	$: addCategoryOptions = getEntryCategoryOptions(categories, selectedEntryType);
-	$: accountSelectOptions = accounts.map((account) => ({ value: account.id, label: account.name }));
+	$: entries = state?.entries.filter((entry) => entry.groupId === state.settings.activeGroupId && isActive(entry)) ?? [];
+	$: accountUsageCounts = countTransactionUsage(entries, 'accountId');
+	$: categoryUsageCounts = countTransactionUsage(entries, 'categoryId');
+	$: addCategoryOptions = sortByTransactionUsage(
+		getEntryCategoryOptions(categories, selectedEntryType),
+		categoryUsageCounts
+	);
+	$: accountSelectOptions = [
+		...sortByTransactionUsage(accounts, accountUsageCounts),
+		...sortByTransactionUsage(
+			allAccounts.filter((account) => !isActive(account)),
+			accountUsageCounts
+		)
+	].map((account) => ({
+		value: account.id,
+		label: isActive(account) ? account.name : `${account.name} (Inactive)`,
+		disabled: !isActive(account)
+	}));
 	$: categorySelectOptions = addCategoryOptions.map((category) => ({
 		value: category.id,
 		label: `${category.name} (${categoryScopeLabel(category.scope)})`
 	}));
-	$: transactionEditCategoryOptions = getEntryCategoryOptions(categories, transactionEditType).map((category) => ({
-		value: category.id,
-		label: `${category.name} (${categoryScopeLabel(category.scope)})`
-	}));
+	$: transactionEditCategoryOptions = sortByTransactionUsage(
+		getEntryCategoryOptions(categories, transactionEditType),
+		categoryUsageCounts
+	).map((category) => ({
+			value: category.id,
+			label: `${category.name} (${categoryScopeLabel(category.scope)})`
+		}));
 	$: settingsCategoryOptions = categories.map((category) => ({
 		value: category.id,
 		label: `${category.name} (${categoryScopeLabel(category.scope)})`
@@ -187,10 +210,11 @@
 		}
 	}
 	$: {
-		if (accounts.length === 0) {
+		const selectableAccountOptions = accountSelectOptions.filter((option) => !option.disabled);
+		if (selectableAccountOptions.length === 0) {
 			selectedAccountId = '';
-		} else if (!accounts.some((account) => account.id === selectedAccountId)) {
-			selectedAccountId = accounts[0].id;
+		} else if (!selectableAccountOptions.some((option) => option.value === selectedAccountId)) {
+			selectedAccountId = selectableAccountOptions[0].value;
 		}
 	}
 	$: {
@@ -207,7 +231,6 @@
 			transactionEditCategoryId = transactionEditCategoryOptions[0].value;
 		}
 	}
-	$: entries = state?.entries.filter((entry) => entry.groupId === state.settings.activeGroupId && isActive(entry)) ?? [];
 	$: adjustments =
 		state?.adjustments.filter((adjustment) => adjustment.groupId === state.settings.activeGroupId && isActive(adjustment)) ??
 		[];
@@ -220,6 +243,17 @@
 		return normalizeCategoryScope(category?.scope) === 'household';
 	});
 	$: currentBalance = getCurrentBalance(accounts, householdEntries);
+	$: currentMonthKey = todayInputValue().slice(0, 7);
+	$: currentMonthEntries = entries.filter((entry) => entry.occurredOn.startsWith(currentMonthKey));
+	$: currentMonthIncomeEntries = currentMonthEntries.filter((entry) => entry.type === 'income');
+	$: currentMonthExpenseEntries = currentMonthEntries.filter((entry) => entry.type === 'expense');
+	$: currentMonthIncome = currentMonthIncomeEntries.reduce((sum, entry) => sum + entry.amount, 0);
+	$: currentMonthSpent = currentMonthExpenseEntries.reduce((sum, entry) => sum + entry.amount, 0);
+	$: currentMonthHouseholdEntries = householdEntries.filter((entry) => entry.occurredOn.startsWith(currentMonthKey));
+	$: currentMonthHouseholdBalance = currentMonthHouseholdEntries.reduce(
+		(sum, entry) => sum + (entry.type === 'income' ? entry.amount : -entry.amount),
+		0
+	);
 	$: personalEntries = entries.filter((entry) => {
 		const category = categoryById.get(entry.categoryId);
 		if (normalizeCategoryScope(category?.scope) === 'user') {
@@ -228,10 +262,11 @@
 		}
 		return false;
 	});
-	$: personalIncome = personalEntries
+	$: currentMonthPersonalEntries = personalEntries.filter((entry) => entry.occurredOn.startsWith(currentMonthKey));
+	$: personalIncome = currentMonthPersonalEntries
 		.filter((entry) => entry.type === 'income')
 		.reduce((sum, entry) => sum + entry.amount, 0);
-	$: personalSpent = personalEntries
+	$: personalSpent = currentMonthPersonalEntries
 		.filter((entry) => entry.type === 'expense')
 		.reduce((sum, entry) => sum + entry.amount, 0);
 	$: personalBalance = personalIncome - personalSpent;
@@ -279,7 +314,7 @@
 			meterPercent
 		};
 	});
-	$: selectedSettingsAccount = accounts.find((account) => account.id === selectedSettingsAccountId) ?? null;
+	$: selectedSettingsAccount = allAccounts.find((account) => account.id === selectedSettingsAccountId) ?? null;
 	$: selectedSettingsCategory = categories.find((category) => category.id === selectedSettingsCategoryId) ?? null;
 	$: if (selectedSettingsAccount) {
 		selectedSettingsAccountType = selectedSettingsAccount.type;
@@ -448,6 +483,26 @@
 		showFeedback('success', 'Refreshed', 'Latest data loaded from backend.');
 	}
 
+	async function handleManualSync(): Promise<void> {
+		if ($syncStatus.state === 'syncing') return;
+		if (!isOnline) {
+			showFeedback('error', 'Offline', 'You are offline. Changes will sync when the connection returns.');
+			return;
+		}
+		if (!authSession) {
+			showFeedback('error', 'Not signed in', 'Login to sync with the backend.');
+			return;
+		}
+
+		const synced = await finance.syncNow();
+		if (!synced) {
+			showFeedback('error', 'Sync failed', $syncStatus.message || 'Could not sync with the backend.');
+			return;
+		}
+
+		showFeedback('success', 'Synced', 'Your data is up to date.');
+	}
+
 	async function submitMovement(event: SubmitEvent, view: 'mobile' | 'desktop') {
 		const form = event.currentTarget as HTMLFormElement;
 		const formData = new FormData(form);
@@ -550,7 +605,7 @@
 	}
 
 	function accountName(id: string): string {
-		return accounts.find((account) => account.id === id)?.name ?? 'Account';
+		return allAccounts.find((account) => account.id === id)?.name ?? 'Account';
 	}
 
 	function cutoffDateFromMonthsBack(monthsBack: string): string | null {
@@ -621,6 +676,24 @@
 		activeScreen = 'search';
 	}
 
+	async function openDesktopTransactionSearch(): Promise<void> {
+		desktopScreen = 'transactions';
+		desktopSearchOpen = true;
+		await tick();
+		desktopSearchInput?.focus();
+	}
+
+	function closeDesktopTransactionSearch(): void {
+		desktopSearchOpen = false;
+		transactionSearchQuery = '';
+	}
+
+	function handleDesktopSearchKeydown(event: KeyboardEvent): void {
+		if (event.key !== 'Escape') return;
+		event.preventDefault();
+		closeDesktopTransactionSearch();
+	}
+
 	function closeTransactionSearch(): void {
 		if (remoteSearchTimer) clearTimeout(remoteSearchTimer);
 		remoteSearchError = '';
@@ -638,6 +711,23 @@
 		selectedTransactionFallback = fallback ?? null;
 		transactionEditMode = false;
 		activeScreen = 'transactionDetail';
+	}
+
+	function openDesktopTransactionDetail(
+		entryId: string,
+		origin: 'dashboard' | 'transactions',
+		fallback?: LedgerEntry
+	): void {
+		selectedTransactionId = entryId;
+		selectedTransactionFallback = fallback ?? null;
+		transactionEditMode = false;
+		desktopTransactionDetailOrigin = origin;
+		desktopScreen = 'transactionDetail';
+	}
+
+	function closeDesktopTransactionDetail(): void {
+		transactionEditMode = false;
+		desktopScreen = desktopTransactionDetailOrigin;
 	}
 
 	function openTransactionEditor(): void {
@@ -782,13 +872,10 @@
 		return palette[index % palette.length];
 	}
 
-	function accountBalance(accountId: string): number {
-		const account = accounts.find((item) => item.id === accountId);
-		const movement = entries
-			.filter((entry) => entry.accountId === accountId)
+	function accountMonthlyBalance(accountId: string): number {
+		return entries
+			.filter((entry) => entry.accountId === accountId && entry.occurredOn.startsWith(currentMonthKey))
 			.reduce((sum, entry) => sum + (entry.type === 'income' ? entry.amount : -entry.amount), 0);
-
-		return (account?.openingBalance ?? 0) + movement;
 	}
 
 	function buildStatItems(items: PeriodCategoryTotal[], entryType: CategoryType): StatItem[] {
@@ -897,6 +984,25 @@ function getEntryCategoryOptions(
 	return allCategories.filter((category) => normalizeCategoryType(category.type, category.name) === entryType);
 }
 
+	function countTransactionUsage(
+		allEntries: LedgerEntry[],
+		field: 'accountId' | 'categoryId'
+	): Map<string, number> {
+		const counts = new Map<string, number>();
+		for (const entry of allEntries) {
+			const id = entry[field];
+			counts.set(id, (counts.get(id) ?? 0) + 1);
+		}
+		return counts;
+	}
+
+	function sortByTransactionUsage<T extends { id: string }>(items: T[], counts: Map<string, number>): T[] {
+		return items
+			.map((item, index) => ({ item, index, count: counts.get(item.id) ?? 0 }))
+			.sort((a, b) => b.count - a.count || a.index - b.index)
+			.map(({ item }) => item);
+	}
+
 	function ringSegmentStyle(items: StatItem[], index: number): string {
 		const circumference = 565;
 		const total = items.reduce((sum, item) => sum + item.amount, 0) || 1;
@@ -987,6 +1093,12 @@ function getEntryCategoryOptions(
 			return {
 				title: 'Transactions',
 				subtitle: `All household ledger activity for ${groupName ?? 'your household'}.`
+			};
+		}
+		if (screen === 'transactionDetail') {
+			return {
+				title: 'Transaction detail',
+				subtitle: `View and edit this ledger entry for ${groupName ?? 'your household'}.`
 			};
 		}
 		if (screen === 'review') {
@@ -1289,23 +1401,24 @@ function getEntryCategoryOptions(
 
 			<button class="balance-card" type="button" on:click={() => (activeScreen = 'add')}>
 				<span>Household balance</span>
-				<strong>{currency(currentBalance)}</strong>
+				<strong>{currency(currentMonthHouseholdBalance)}</strong>
+				<small>This month · {currentMonthHouseholdEntries.length} transaction{currentMonthHouseholdEntries.length === 1 ? '' : 's'}</small>
 			</button>
 
 			<article class="balance-card personal-balance-card">
 				<span>Personal balance</span>
 				<strong>{currency(personalBalance)}</strong>
-				<small>{personalEntries.length} of {entries.length} transactions</small>
+				<small>This month · {currentMonthPersonalEntries.length} transaction{currentMonthPersonalEntries.length === 1 ? '' : 's'}</small>
 			</article>
 
 			<div class="home-stat-grid">
 				<article>
 					<span>Income</span>
-					<strong>{currency(currentSummary?.income ?? 0)}</strong>
+					<strong>{currency(currentMonthIncome)}</strong>
 				</article>
 				<article>
 					<span>Spending</span>
-					<strong>{currency(currentSummary?.spent ?? 0)}</strong>
+					<strong>{currency(currentMonthSpent)}</strong>
 				</article>
 				<article>
 					<span>Ending balance</span>
@@ -1519,7 +1632,7 @@ function getEntryCategoryOptions(
 						<AppSelect
 							ariaLabel="Account"
 							bind:value={selectedAccountId}
-							disabled={accountSelectOptions.length === 0}
+							disabled={accounts.length === 0}
 							name="accountId"
 							options={accountSelectOptions}
 							placeholder="No accounts configured"
@@ -1734,7 +1847,7 @@ function getEntryCategoryOptions(
 								<AppSelect
 									ariaLabel="Account"
 									bind:value={transactionEditAccountId}
-									disabled={accountSelectOptions.length === 0}
+									disabled={accounts.length === 0}
 									name="accountId"
 									options={accountSelectOptions}
 									required
@@ -1873,9 +1986,14 @@ function getEntryCategoryOptions(
 					<p class="muted">{$syncStatus.message}</p>
 					<p class="muted">Signed in as {authSession?.user.email}</p>
 					<div class="button-row">
-						<button type="button" on:click={() => finance.syncNow()}>
-							<RefreshCw size={16} />
-							Sync now
+						<button
+							type="button"
+							disabled={$syncStatus.state === 'syncing'}
+							aria-busy={$syncStatus.state === 'syncing'}
+							on:click={handleManualSync}
+						>
+							<RefreshCw size={16} class={$syncStatus.state === 'syncing' ? 'spinning' : ''} />
+							{$syncStatus.state === 'syncing' ? 'Syncing...' : 'Sync now'}
 						</button>
 						<button class="ghost" type="button" on:click={logout}>Logout</button>
 					</div>
@@ -1903,14 +2021,19 @@ function getEntryCategoryOptions(
 						<h2>Modify accounts</h2>
 						<button class="ghost" type="button" on:click={() => openSettingsSubpage('overview')}>Back to settings</button>
 					</div>
-					{#each accounts as account}
-						<button class="settings-row-button" type="button" on:click={() => openAccountEditor(account.id)}>
+					{#each allAccounts as account}
+						<button
+							class="settings-row-button"
+							class:inactive-account={!isActive(account)}
+							type="button"
+							on:click={() => openAccountEditor(account.id)}
+						>
 							<span style={`--swatch:${account.color}`}></span>
 							<div>
 								<strong>{accountEmoji(account)} {account.name}</strong>
-								<small>{account.type}</small>
+								<small>{account.type} · {isActive(account) ? 'Active' : 'Inactive'}</small>
 							</div>
-							<b>{currency(accountBalance(account.id))}</b>
+							<b>{currency(accountMonthlyBalance(account.id))}</b>
 						</button>
 					{/each}
 				</section>
@@ -1948,6 +2071,13 @@ function getEntryCategoryOptions(
 							</div>
 							<input name="icon" value={selectedSettingsAccount.icon} placeholder="Emoji icon (e.g. 🏦)" />
 							<input name="color" type="color" value={selectedSettingsAccount.color} title="Account color" />
+							<label class="account-status-toggle">
+								<input name="inactive" type="checkbox" checked={!isActive(selectedSettingsAccount)} />
+								<span>
+									<strong>Inactive account</strong>
+									<small>Keep its history, but prevent it from being selected for new transactions.</small>
+								</span>
+							</label>
 							<button type="submit">Save account</button>
 						</form>
 					{:else}
@@ -2177,7 +2307,11 @@ function getEntryCategoryOptions(
 			<a href="#dashboard" class:active={desktopScreen === 'dashboard'} on:click|preventDefault={() => (desktopScreen = 'dashboard')}>
 				<Home size={18} /> Dashboard
 			</a>
-			<a href="#transactions" class:active={desktopScreen === 'transactions'} on:click|preventDefault={() => (desktopScreen = 'transactions')}>
+			<a
+				href="#transactions"
+				class:active={desktopScreen === 'transactions' || desktopScreen === 'transactionDetail'}
+				on:click|preventDefault={() => (desktopScreen = 'transactions')}
+			>
 				<ClipboardList size={18} /> Transactions
 			</a>
 			<a href="#wallet" class:active={desktopScreen === 'accounts'} on:click|preventDefault={() => (desktopScreen = 'accounts')}>
@@ -2191,7 +2325,15 @@ function getEntryCategoryOptions(
 			</a>
 		</nav>
 		<div class="sidebar-footer">
-			<button type="button" on:click={() => finance.syncNow()}><RefreshCw size={17} /> Sync</button>
+			<button
+				type="button"
+				disabled={$syncStatus.state === 'syncing'}
+				aria-busy={$syncStatus.state === 'syncing'}
+				on:click={handleManualSync}
+			>
+				<RefreshCw size={17} class={$syncStatus.state === 'syncing' ? 'spinning' : ''} />
+				{$syncStatus.state === 'syncing' ? 'Syncing...' : 'Sync'}
+			</button>
 			<span class:offline={!isOnline}>{isOnline ? 'Online' : 'Offline'}</span>
 		</div>
 	</aside>
@@ -2203,9 +2345,37 @@ function getEntryCategoryOptions(
 				<p>{desktopHeading.subtitle}</p>
 			</div>
 				<div class="desktop-actions">
-					<button title="Search transactions" type="button" on:click={() => (desktopScreen = 'transactions')}>
-						<Search size={20} />
-					</button>
+					{#if desktopSearchOpen}
+						<div class="desktop-search-control open" role="search">
+							<Search size={18} aria-hidden="true" />
+							<input
+								bind:this={desktopSearchInput}
+								bind:value={transactionSearchQuery}
+								type="search"
+								placeholder="Search transactions..."
+								aria-label="Search transactions"
+								on:keydown={handleDesktopSearchKeydown}
+							/>
+							<button
+								class="desktop-search-close"
+								title="Close search"
+								aria-label="Close search"
+								type="button"
+								on:click={closeDesktopTransactionSearch}
+							>×</button>
+						</div>
+					{:else}
+						<button
+							class="desktop-search-trigger"
+							title="Search transactions"
+							aria-label="Search transactions"
+							aria-expanded="false"
+							type="button"
+							on:click={openDesktopTransactionSearch}
+						>
+							<Search size={20} />
+						</button>
+					{/if}
 					{#if desktopScreen === 'add'}
 						<span class="desktop-action-badge">
 							<Plus size={18} />
@@ -2229,23 +2399,23 @@ function getEntryCategoryOptions(
 		<section class="desktop-kpis">
 			<article>
 				<span>Household balance</span>
-				<strong>{currency(currentBalance)}</strong>
-				<small>{allTransactions.length} transactions · {accounts.length} accounts</small>
+				<strong>{currency(currentMonthHouseholdBalance)}</strong>
+				<small>This month · {currentMonthHouseholdEntries.length} transaction{currentMonthHouseholdEntries.length === 1 ? '' : 's'}</small>
 			</article>
 			<article>
 				<span>Personal balance</span>
 				<strong>{currency(personalBalance)}</strong>
-				<small>{personalEntries.length} personal transactions</small>
+				<small>This month · {currentMonthPersonalEntries.length} personal transaction{currentMonthPersonalEntries.length === 1 ? '' : 's'}</small>
 			</article>
 			<article>
 				<span>Income</span>
-				<strong>{currency(currentSummary?.income ?? 0)}</strong>
-				<small>{currentSummary ? readablePeriod(currentSummary.periodKey, grain) : 'No income yet'}</small>
+				<strong>{currency(currentMonthIncome)}</strong>
+				<small>This month · {currentMonthIncomeEntries.length} transaction{currentMonthIncomeEntries.length === 1 ? '' : 's'}</small>
 			</article>
 			<article>
 				<span>Expense</span>
-				<strong>{currency(currentSummary?.spent ?? 0)}</strong>
-				<small>{categories.length} categories configured</small>
+				<strong>{currency(currentMonthSpent)}</strong>
+				<small>This month · {currentMonthExpenseEntries.length} transaction{currentMonthExpenseEntries.length === 1 ? '' : 's'}</small>
 			</article>
 		</section>
 
@@ -2339,7 +2509,7 @@ function getEntryCategoryOptions(
 				<div class="desktop-card-head">
 					<div>
 						<h2>Accounts</h2>
-						<p>Cards, banks, wallets and cash</p>
+						<p>This month across cards, banks, wallets and cash</p>
 					</div>
 					<button type="button" on:click={() => (desktopAddAccountWizardOpen = !desktopAddAccountWizardOpen)}>
 						<Plus size={16} />
@@ -2355,9 +2525,9 @@ function getEntryCategoryOptions(
 							</div>
 							<div>
 								<strong>{account.name}</strong>
-								<small>{account.type}</small>
+								<small>{account.type} · This month</small>
 							</div>
-							<b>{currency(accountBalance(account.id))}</b>
+							<b>{currency(accountMonthlyBalance(account.id))}</b>
 						</button>
 					{/each}
 				</div>
@@ -2442,13 +2612,18 @@ function getEntryCategoryOptions(
 					<span>Amount</span>
 				</div>
 				{#each filteredTransactions.slice(0, 8) as entry}
-					<article>
+					<button
+						class="desktop-transaction-row"
+						type="button"
+						aria-label={`Open transaction ${entry.merchant} ${currency(entry.amount)}`}
+						on:click={() => openDesktopTransactionDetail(entry.id, 'dashboard')}
+					>
 						<time>{formatDate(entry.occurredOn)}</time>
 						<strong>{entry.merchant}</strong>
 						<span>{categoryName(entry.categoryId)}</span>
 						<span>{accountName(entry.accountId)}</span>
 						<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{currency(entry.amount)}</b>
-					</article>
+					</button>
 				{:else}
 					<p class="muted">{transactionSearchQueryNormalized ? 'No matching transactions.' : 'No transactions yet.'}</p>
 				{/each}
@@ -2482,17 +2657,140 @@ function getEntryCategoryOptions(
 							<span>Amount</span>
 						</div>
 						{#each filteredTransactions as entry}
-							<article>
+							<button
+								class="desktop-transaction-row"
+								type="button"
+								aria-label={`Open transaction ${entry.merchant} ${currency(entry.amount)}`}
+								on:click={() => openDesktopTransactionDetail(entry.id, 'transactions')}
+							>
 								<time>{formatDate(entry.occurredOn)}</time>
 								<strong>{entry.merchant}</strong>
 								<span>{categoryName(entry.categoryId)}</span>
 								<span>{accountName(entry.accountId)}</span>
 								<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{currency(entry.amount)}</b>
-							</article>
+							</button>
 						{:else}
 							<p class="muted">{transactionSearchQueryNormalized ? 'No matching transactions.' : 'No transactions yet.'}</p>
 						{/each}
 					</div>
+				</section>
+			{:else if desktopScreen === 'transactionDetail'}
+				<section class="desktop-card desktop-page-card">
+					<div class="desktop-card-head">
+						<div>
+							<h2>Transaction detail</h2>
+							<p>Review the ledger entry or update its details.</p>
+						</div>
+						<button type="button" on:click={closeDesktopTransactionDetail}>← Back to transactions</button>
+					</div>
+					{#if selectedTransaction}
+						{#if transactionEditMode}
+							<form class="desktop-form-grid transaction-edit-form" on:submit|preventDefault={submitTransactionUpdate}>
+								<div class="field-grid">
+									<label>
+										Type
+										<AppSelect ariaLabel="Entry type" bind:value={transactionEditType} name="type" options={entryTypeOptions} required />
+									</label>
+									<label>
+										Amount
+										<input
+											bind:value={transactionEditAmount}
+											name="amount"
+											type="text"
+											inputmode="decimal"
+											on:input={formatAmountInput}
+											required
+										/>
+									</label>
+								</div>
+								<label>
+									Merchant
+									<input bind:value={transactionEditMerchant} name="merchant" required />
+								</label>
+								<div class="field-grid">
+									<label>
+										Account
+										<AppSelect
+											ariaLabel="Account"
+											bind:value={transactionEditAccountId}
+											disabled={accounts.length === 0}
+											name="accountId"
+											options={accountSelectOptions}
+											required
+										/>
+									</label>
+									<label>
+										Category
+										<AppSelect
+											ariaLabel="Category"
+											bind:value={transactionEditCategoryId}
+											disabled={transactionEditCategoryOptions.length === 0}
+											name="categoryId"
+											options={transactionEditCategoryOptions}
+											required
+										/>
+									</label>
+								</div>
+								<div class="field-grid">
+									<label>
+										Date
+										<input bind:value={transactionEditDate} name="occurredOn" type="date" required />
+									</label>
+									<label>
+										Note
+										<input bind:value={transactionEditNote} name="note" placeholder="Optional" />
+									</label>
+								</div>
+								<input name="currency" type="hidden" value="SGD" />
+								<div class="button-row">
+									<button type="submit">Save changes</button>
+									<button class="ghost" type="button" on:click={closeTransactionEditor}>Cancel</button>
+								</div>
+							</form>
+						{:else}
+							<section class="transaction-detail-card">
+								<div class="transaction-detail-row">
+									<span>Merchant</span>
+									<strong>{selectedTransaction.merchant}</strong>
+								</div>
+								<div class="transaction-detail-row">
+									<span>Type</span>
+									<strong>{selectedTransaction.type === 'expense' ? 'Expense' : 'Income'}</strong>
+								</div>
+								<div class="transaction-detail-row">
+									<span>Amount</span>
+									<strong class:negative={selectedTransaction.type === 'expense'}>
+										{selectedTransaction.type === 'expense' ? '-' : '+'}{currency(selectedTransaction.amount)}
+									</strong>
+								</div>
+								<div class="transaction-detail-row">
+									<span>Currency</span>
+									<strong>SGD</strong>
+								</div>
+								<div class="transaction-detail-row">
+									<span>Date</span>
+									<strong>{formatDate(selectedTransaction.occurredOn)}</strong>
+								</div>
+								<div class="transaction-detail-row">
+									<span>Category</span>
+									<strong>{categoryName(selectedTransaction.categoryId)}</strong>
+								</div>
+								<div class="transaction-detail-row">
+									<span>Account</span>
+									<strong>{accountName(selectedTransaction.accountId)}</strong>
+								</div>
+								<div class="transaction-detail-row">
+									<span>Note</span>
+									<strong>{selectedTransaction.note || '-'}</strong>
+								</div>
+								<div class="button-row transaction-detail-actions">
+									<button type="button" on:click={openTransactionEditor}>Edit transaction</button>
+								</div>
+							</section>
+						{/if}
+					{:else}
+						<p class="empty-card">Transaction not found.</p>
+					{/if}
 				</section>
 			{:else if desktopScreen === 'accounts'}
 				<div class="desktop-page-grid">
@@ -2500,7 +2798,7 @@ function getEntryCategoryOptions(
 						<div class="desktop-card-head">
 							<div>
 								<h2>Accounts</h2>
-								<p>Balances by cash, bank, card, and wallet.</p>
+								<p>Current-month activity by cash, bank, card, and wallet.</p>
 							</div>
 							<button type="button" on:click={() => (desktopAddAccountWizardOpen = !desktopAddAccountWizardOpen)}>
 								<Plus size={16} />
@@ -2508,7 +2806,7 @@ function getEntryCategoryOptions(
 							</button>
 						</div>
 						<div class="desktop-account-list">
-							{#each accounts as account}
+							{#each allAccounts as account}
 								<Collapsible.Root
 									open={selectedSettingsAccountId === account.id}
 									onOpenChange={(open) => {
@@ -2516,17 +2814,17 @@ function getEntryCategoryOptions(
 										if (open) desktopAddAccountWizardOpen = false;
 									}}
 								>
-									<Collapsible.Trigger class="desktop-account-row">
+									<Collapsible.Trigger class={`desktop-account-row ${isActive(account) ? '' : 'inactive-account'}`.trim()}>
 										<div class="entity-lead">
 											<span class="entity-icon">{accountEmoji(account)}</span>
 											<span style={`--swatch:${account.color}`}></span>
 										</div>
 										<div>
 											<strong>{account.name}</strong>
-											<small>{account.type}</small>
+											<small>{account.type} · {isActive(account) ? 'Active' : 'Inactive'}</small>
 										</div>
 										<b class:desktop-row-action={selectedSettingsAccountId === account.id}>
-											{selectedSettingsAccountId === account.id ? 'Close' : currency(accountBalance(account.id))}
+											{selectedSettingsAccountId === account.id ? 'Close' : currency(accountMonthlyBalance(account.id))}
 										</b>
 									</Collapsible.Trigger>
 									<Collapsible.Content forceMount>
@@ -2557,6 +2855,13 @@ function getEntryCategoryOptions(
 													</div>
 													<input name="icon" value={account.icon} placeholder="Emoji icon (e.g. 🏦)" />
 													<input name="color" type="color" value={account.color} title="Account color" />
+													<label class="account-status-toggle">
+														<input name="inactive" type="checkbox" checked={!isActive(account)} />
+														<span>
+															<strong>Inactive account</strong>
+															<small>Keep its history, but prevent it from being selected for new transactions.</small>
+														</span>
+													</label>
 													<div class="desktop-inline-wizard-actions">
 														<button type="submit">Save account</button>
 														<button class="ghost" type="button" on:click={() => (selectedSettingsAccountId = '')}>Cancel</button>
@@ -2782,7 +3087,7 @@ function getEntryCategoryOptions(
 								<AppSelect
 									ariaLabel="Account"
 									bind:value={selectedAccountId}
-									disabled={accountSelectOptions.length === 0}
+									disabled={accounts.length === 0}
 									name="accountId"
 									options={accountSelectOptions}
 									placeholder="No accounts configured"
@@ -2899,7 +3204,15 @@ function getEntryCategoryOptions(
 						<button type="submit">Rename group</button>
 					</form>
 					<div class="button-row">
-						<button type="button" on:click={() => finance.syncNow()}><RefreshCw size={16} /> Sync now</button>
+						<button
+							type="button"
+							disabled={$syncStatus.state === 'syncing'}
+							aria-busy={$syncStatus.state === 'syncing'}
+							on:click={handleManualSync}
+						>
+							<RefreshCw size={16} class={$syncStatus.state === 'syncing' ? 'spinning' : ''} />
+							{$syncStatus.state === 'syncing' ? 'Syncing...' : 'Sync now'}
+						</button>
 						<button class="ghost" type="button" on:click={logout}>Logout</button>
 					</div>
 					<form class="desktop-form-grid" on:submit|preventDefault={handleCreateApiKey}>

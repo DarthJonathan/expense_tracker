@@ -101,6 +101,7 @@ export const finance = {
 			occurredOn: normalizeText(formData.get('occurredOn'), todayInputValue()),
 			merchant: normalizeText(formData.get('merchant'), 'Untitled'),
 			note: normalizeText(formData.get('note')),
+			metadata: { categorySource: 'manual', categoryConfidence: 1 },
 			createdBy: state.settings.deviceUserId,
 			createdAt: now,
 			updatedAt: now,
@@ -148,7 +149,8 @@ export const finance = {
 			currency: 'SGD',
 			occurredOn: normalizeText(formData.get('occurredOn'), existing.occurredOn),
 			merchant: normalizeText(formData.get('merchant'), existing.merchant),
-			note: normalizeText(formData.get('note'), existing.note)
+			note: normalizeText(formData.get('note'), existing.note),
+			metadata: { ...existing.metadata, categorySource: 'manual', categoryConfidence: 1 }
 		});
 
 		await mutate('entries', 'entries', next);
@@ -180,17 +182,21 @@ export const finance = {
 		const state = get(financeState);
 		if (!state) return;
 
-		const existing = state.accounts.find((account) => account.id === accountId && !account.deletedAt);
+		const existing = state.accounts.find(
+			(account) => account.id === accountId && account.groupId === state.settings.activeGroupId
+		);
 		if (!existing) return;
 
 		const type = normalizeText(formData.get('type'), existing.type) as AccountType;
+		const inactive = formData.get('inactive') === 'on';
 		const next: Account = touch({
 			...existing,
 			name: normalizeText(formData.get('name'), existing.name),
 			type,
 			openingBalance: cents(formData.get('openingBalance')),
 			color: normalizeText(formData.get('color'), existing.color),
-			icon: normalizeText(formData.get('icon'), accountIconByType(type))
+			icon: normalizeText(formData.get('icon'), accountIconByType(type)),
+			deletedAt: inactive ? existing.deletedAt ?? isoNow() : null
 		});
 
 		await mutate('accounts', 'accounts', next);
