@@ -80,8 +80,12 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 			}
 
 			for _, entry := range filterEntriesByGroup(req.Entries, sourceGroupID, groupID) {
-				if err := upsertEntry(tx, entry); err != nil {
+				accepted, err := upsertEntry(tx, entry)
+				if err != nil {
 					return fmt.Errorf("upsert entry %s: %w", entry.ID, err)
+				}
+				if !accepted {
+					continue
 				}
 
 				if err := upsertMerchant(tx, merchantFromEntry(groupID, entry, now)); err != nil {
@@ -280,6 +284,7 @@ func activeGroup(groups []dao.ExpenseGroup, groupID, deviceUserID string, now ti
 }
 
 func upsertGroup(tx *gorm.DB, group dao.ExpenseGroup) error {
+	table := dao.QualifiedTable("expense_groups")
 	row := map[string]any{
 		"id":          group.ID,
 		"name":        group.Name,
@@ -291,21 +296,19 @@ func upsertGroup(tx *gorm.DB, group dao.ExpenseGroup) error {
 	}
 
 	return tx.Table((dao.ExpenseGroup{}).TableName()).
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "id"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"name":        row["name"],
-				"invite_code": row["invite_code"],
-				"created_by":  gorm.Expr(fmt.Sprintf("coalesce(%s.created_by, excluded.created_by)", dao.QualifiedTable("expense_groups"))),
-				"updated_at":  row["updated_at"],
-				"deleted_at":  row["deleted_at"],
-			}),
-		}).
+		Clauses(newerOnlyOnConflict(table, map[string]any{
+			"name":        row["name"],
+			"invite_code": row["invite_code"],
+			"created_by":  gorm.Expr(fmt.Sprintf("coalesce(%s.created_by, excluded.created_by)", table)),
+			"updated_at":  row["updated_at"],
+			"deleted_at":  row["deleted_at"],
+		})).
 		Create(row).Error
 }
 
 func upsertAccount(tx *gorm.DB, account dao.ExpenseAccount) error {
 	now := time.Now().UTC()
+	table := dao.QualifiedTable("expense_accounts")
 	row := map[string]any{
 		"id":              account.ID,
 		"group_id":        account.GroupID,
@@ -320,24 +323,22 @@ func upsertAccount(tx *gorm.DB, account dao.ExpenseAccount) error {
 	}
 
 	return tx.Table((dao.ExpenseAccount{}).TableName()).
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "id"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"group_id":        row["group_id"],
-				"name":            row["name"],
-				"type":            row["type"],
-				"opening_balance": row["opening_balance"],
-				"color":           row["color"],
-				"icon":            row["icon"],
-				"updated_at":      row["updated_at"],
-				"deleted_at":      row["deleted_at"],
-			}),
-		}).
+		Clauses(newerOnlyOnConflict(table, map[string]any{
+			"group_id":        row["group_id"],
+			"name":            row["name"],
+			"type":            row["type"],
+			"opening_balance": row["opening_balance"],
+			"color":           row["color"],
+			"icon":            row["icon"],
+			"updated_at":      row["updated_at"],
+			"deleted_at":      row["deleted_at"],
+		})).
 		Create(row).Error
 }
 
 func upsertCategory(tx *gorm.DB, category dao.ExpenseCategory) error {
 	now := time.Now().UTC()
+	table := dao.QualifiedTable("expense_categories")
 	scope := normalizeCategoryScope(category.Scope)
 	var ownerUserID any
 	if scope == "user" {
@@ -359,36 +360,61 @@ func upsertCategory(tx *gorm.DB, category dao.ExpenseCategory) error {
 	}
 
 	return tx.Table((dao.ExpenseCategory{}).TableName()).
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "id"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"group_id":       row["group_id"],
-				"name":           row["name"],
-				"type":           row["type"],
-				"scope":          row["scope"],
-				"owner_user_id":  row["owner_user_id"],
-				"color":          row["color"],
-				"icon":           row["icon"],
-				"monthly_target": row["monthly_target"],
-				"updated_at":     row["updated_at"],
-				"deleted_at":     row["deleted_at"],
-			}),
-		}).
+		Clauses(newerOnlyOnConflict(table, map[string]any{
+			"group_id":       row["group_id"],
+			"name":           row["name"],
+			"type":           row["type"],
+			"scope":          row["scope"],
+			"owner_user_id":  row["owner_user_id"],
+			"color":          row["color"],
+			"icon":           row["icon"],
+			"monthly_target": row["monthly_target"],
+			"updated_at":     row["updated_at"],
+			"deleted_at":     row["deleted_at"],
+		})).
 		Create(row).Error
 }
 
-func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) error {
+func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) (bool, error) {
 	now := time.Now().UTC()
 	metadataJSON, err := json.Marshal(entry.Metadata)
 	if err != nil {
-		return fmt.Errorf("marshal entry metadata: %w", err)
+		return false, fmt.Errorf("marshal entry metadata: %w", err)
 	}
 	if len(metadataJSON) == 0 || string(metadataJSON) == "null" {
 		metadataJSON = []byte("{}")
 	}
 	table := dao.QualifiedTable("expense_entries")
 
-	return tx.Exec(fmt.Sprintf(`
+	result := tx.Exec(entryUpsertSQL(table),
+		entry.ID,
+		entry.GroupID,
+		entry.AccountID,
+		entry.CategoryID,
+		entry.Type,
+		entry.Amount,
+		normalizeEntryCurrency(entry.Currency),
+		entry.OccurredOn,
+		normalizeBaseAmount(entry),
+		normalizeBaseCurrency(entry),
+		normalizeFxRate(entry.FxRate),
+		normalizeFxRateDate(entry),
+		entry.Merchant,
+		entry.Note,
+		string(metadataJSON),
+		stringOrNil(entry.CreatedBy),
+		normalizeTime(entry.CreatedAt, now),
+		normalizeTime(entry.UpdatedAt, now),
+		entry.DeletedAt,
+	)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
+func entryUpsertSQL(table string) string {
+	return fmt.Sprintf(`
 		insert into %s (
 			id, group_id, account_id, category_id, type, amount, currency, occurred_on,
 			base_amount, base_currency, fx_rate, fx_rate_date,
@@ -416,31 +442,13 @@ func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) error {
 			created_by = coalesce(%s.created_by, excluded.created_by),
 			updated_at = excluded.updated_at,
 			deleted_at = excluded.deleted_at
-	`, table, table),
-		entry.ID,
-		entry.GroupID,
-		entry.AccountID,
-		entry.CategoryID,
-		entry.Type,
-		entry.Amount,
-		normalizeEntryCurrency(entry.Currency),
-		entry.OccurredOn,
-		normalizeBaseAmount(entry),
-		normalizeBaseCurrency(entry),
-		normalizeFxRate(entry.FxRate),
-		normalizeFxRateDate(entry),
-		entry.Merchant,
-		entry.Note,
-		string(metadataJSON),
-		stringOrNil(entry.CreatedBy),
-		normalizeTime(entry.CreatedAt, now),
-		normalizeTime(entry.UpdatedAt, now),
-		entry.DeletedAt,
-	).Error
+		where excluded.updated_at > %s.updated_at
+	`, table, table, table)
 }
 
 func upsertAdjustment(tx *gorm.DB, adjustment dao.ExpenseCategoryAdjustment) error {
 	now := time.Now().UTC()
+	table := dao.QualifiedTable("expense_category_adjustments")
 	row := map[string]any{
 		"id":          adjustment.ID,
 		"group_id":    adjustment.GroupID,
@@ -454,19 +462,26 @@ func upsertAdjustment(tx *gorm.DB, adjustment dao.ExpenseCategoryAdjustment) err
 	}
 
 	return tx.Table((dao.ExpenseCategoryAdjustment{}).TableName()).
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "id"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"group_id":    row["group_id"],
-				"category_id": row["category_id"],
-				"amount":      row["amount"],
-				"occurred_on": row["occurred_on"],
-				"note":        row["note"],
-				"updated_at":  row["updated_at"],
-				"deleted_at":  row["deleted_at"],
-			}),
-		}).
+		Clauses(newerOnlyOnConflict(table, map[string]any{
+			"group_id":    row["group_id"],
+			"category_id": row["category_id"],
+			"amount":      row["amount"],
+			"occurred_on": row["occurred_on"],
+			"note":        row["note"],
+			"updated_at":  row["updated_at"],
+			"deleted_at":  row["deleted_at"],
+		})).
 		Create(row).Error
+}
+
+func newerOnlyOnConflict(table string, assignments map[string]any) clause.OnConflict {
+	return clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.Assignments(assignments),
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Expr{SQL: fmt.Sprintf("excluded.updated_at > %s.updated_at", table)},
+		}},
+	}
 }
 
 func upsertMerchant(tx *gorm.DB, merchant dao.ExpenseMerchant) error {
@@ -530,7 +545,7 @@ func upsertMerchant(tx *gorm.DB, merchant dao.ExpenseMerchant) error {
 
 	if strings.TrimSpace(existing.ID) != "" {
 		return tx.Table((dao.ExpenseMerchant{}).TableName()).
-			Where("id = ?::uuid", existing.ID).
+			Where("id = ?::uuid and updated_at < ?", existing.ID, row["updated_at"]).
 			Updates(map[string]any{
 				"name":         row["name"],
 				"usage_count":  gorm.Expr(fmt.Sprintf("greatest(%s.usage_count, ?)", dao.QualifiedTable("expense_merchants")), usageCount),
@@ -543,7 +558,12 @@ func upsertMerchant(tx *gorm.DB, merchant dao.ExpenseMerchant) error {
 	if err := tx.Table((dao.ExpenseMerchant{}).TableName()).Create(row).Error; err != nil {
 		if isPostgresErrorCode(err, "23505") {
 			return tx.Table((dao.ExpenseMerchant{}).TableName()).
-				Where("group_id = ?::uuid and normalized_name = ?", merchant.GroupID, normalizedName).
+				Where(
+					"group_id = ?::uuid and normalized_name = ? and updated_at < ?",
+					merchant.GroupID,
+					normalizedName,
+					row["updated_at"],
+				).
 				Updates(map[string]any{
 					"name":         row["name"],
 					"usage_count":  gorm.Expr(fmt.Sprintf("%s.usage_count + 1", dao.QualifiedTable("expense_merchants"))),

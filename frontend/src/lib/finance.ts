@@ -157,6 +157,10 @@ export const finance = {
 		await upsertMerchantRecord(state, next.merchant, next.occurredOn);
 	},
 
+	async acceptServerEntry(entry: LedgerEntry) {
+		await mutate('entries', 'entries', entry);
+	},
+
 	async addAccount(formData: FormData) {
 		const state = get(financeState);
 		if (!state) return;
@@ -233,12 +237,15 @@ export const finance = {
 		const state = get(financeState);
 		if (!state) return;
 
-		const existing = state.categories.find((category) => category.id === categoryId && !category.deletedAt);
+		const existing = state.categories.find(
+			(category) => category.id === categoryId && category.groupId === state.settings.activeGroupId
+		);
 		if (!existing) return;
 
 		const name = normalizeText(formData.get('name'), existing.name);
 		const type = normalizeCategoryType(normalizeText(formData.get('type')), name);
 		const scope = normalizeCategoryScope(normalizeText(formData.get('scope'), existing.scope ?? 'household'));
+		const inactive = formData.get('inactive') === 'on';
 		const next: Category = touch({
 			...existing,
 			name,
@@ -247,7 +254,8 @@ export const finance = {
 			ownerUserId: scope === 'user' ? existing.ownerUserId ?? state.settings.deviceUserId : null,
 			color: normalizeText(formData.get('color'), existing.color),
 			icon: normalizeText(formData.get('icon'), categoryIconByName(name)),
-			monthlyTarget: cents(formData.get('monthlyTarget'))
+			monthlyTarget: cents(formData.get('monthlyTarget')),
+			deletedAt: inactive ? existing.deletedAt ?? isoNow() : null
 		});
 
 		await mutate('categories', 'categories', next);

@@ -24,6 +24,10 @@ func Migrate(db *gorm.DB) error {
 		return fmt.Errorf("create schema: %w", err)
 	}
 
+	if err := prepareExpenseEntryFXRateDate(db); err != nil {
+		return fmt.Errorf("prepare expense entry fx rate date: %w", err)
+	}
+
 	if err := db.AutoMigrate(
 		&dao.ExpenseUser{},
 		&dao.ExpenseAPIKey{},
@@ -226,6 +230,33 @@ func Migrate(db *gorm.DB) error {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("create index: %w", err)
 		}
+	}
+
+	return nil
+}
+
+func prepareExpenseEntryFXRateDate(db *gorm.DB) error {
+	table := dao.QualifiedTable("expense_entries")
+	var tableExists bool
+	if err := db.Raw(`select to_regclass(?) is not null`, table).Scan(&tableExists).Error; err != nil {
+		return fmt.Errorf("check expense entries table: %w", err)
+	}
+	if !tableExists {
+		return nil
+	}
+
+	if err := db.Exec(fmt.Sprintf(`alter table %s
+		add column if not exists fx_rate_date date`, table)).Error; err != nil {
+		return fmt.Errorf("add nullable fx_rate_date column: %w", err)
+	}
+	if err := db.Exec(fmt.Sprintf(`alter table %s
+		alter column fx_rate_date set default current_date`, table)).Error; err != nil {
+		return fmt.Errorf("set fx_rate_date default: %w", err)
+	}
+	if err := db.Exec(fmt.Sprintf(`update %s
+		set fx_rate_date = coalesce(fx_rate_date, occurred_on, current_date)
+		where fx_rate_date is null`, table)).Error; err != nil {
+		return fmt.Errorf("backfill fx_rate_date column: %w", err)
 	}
 
 	return nil

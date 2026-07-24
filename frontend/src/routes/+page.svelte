@@ -25,16 +25,18 @@
 	import { clearSession, generateApiKey, getStoredSession, login, register, type APIKeyData, type AuthSession } from '$lib/auth';
 	import { patchSettings } from '$lib/db';
 	import { searchTransactionsRemote, updateTransactionRemote } from '$lib/transactions';
-	import type { CategoryScope, CategoryType, LedgerEntry, PeriodCategoryTotal, PeriodGrain } from '$lib/types';
+	import type { CategoryScope, CategoryType, LedgerEntry, PeriodCategoryTotal, PeriodGrain, PeriodSummary } from '$lib/types';
 	import { cents, currency, formatSignedCurrency, isActive, todayInputValue } from '$lib/utils';
 
 	type Screen = 'home' | 'review' | 'add' | 'transactions' | 'search' | 'transactionDetail' | 'settings';
 	type DesktopScreen = 'dashboard' | 'transactions' | 'transactionDetail' | 'accounts' | 'review' | 'settings' | 'add';
 	type SettingsSubpage = 'overview' | 'accounts' | 'accountEdit' | 'categories' | 'categoryEdit' | 'adjustments';
 	type StatItem = { name: string; color: string; amount: number };
-	type BudgetComparisonItem = { id: string; name: string; spent: number; target: number; fillPercent: number };
+	type BudgetComparisonItem = { id: string; name: string; color: string; spent: number; target: number; fillPercent: number };
 	type FeedbackKind = 'success' | 'error';
 	type SelectOption = { value: string; label: string; disabled?: boolean };
+	type TransactionPeriodMode = 'month' | 'year';
+	type TransactionViewFilter = 'all' | 'household' | 'personal' | 'income' | 'expense';
 
 	const syncStatus = finance.syncStatus;
 	const palette = ['#2563eb', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444', '#0891b2', '#64748b', '#334155'];
@@ -52,11 +54,18 @@
 	let desktopTransactionDetailOrigin: 'dashboard' | 'transactions' = 'transactions';
 	let desktopSearchOpen = false;
 	let desktopSearchInput: HTMLInputElement | null = null;
+	let transactionPeriodMode: TransactionPeriodMode = 'month';
+	let selectedTransactionMonth = todayInputValue().slice(0, 7);
+	let selectedTransactionYear = todayInputValue().slice(0, 4);
+	let transactionViewFilter: TransactionViewFilter = 'all';
 	let desktopAddAccountWizardOpen = false;
 	let desktopAddCategoryWizardOpen = false;
 	let transactionSearchQuery = '';
 	let transactionSearchMonthsBack = '6';
 	let transactionSearchOrigin: Screen = 'transactions';
+	let mobileTransactionCategoryId = '';
+	let mobileTransactionPeriodKey = '';
+	let mobileTransactionGrain: PeriodGrain = 'month';
 	let remoteSearchResults: LedgerEntry[] | null = null;
 	let remoteSearchError = '';
 	let remoteSearchLoading = false;
@@ -68,6 +77,8 @@
 	let selectedEntryType: 'expense' | 'income' = 'expense';
 	let reviewEntryType: 'expense' | 'income' = 'expense';
 	let grain: PeriodGrain = 'month';
+	let selectedReviewPeriodKey = '';
+	let reviewPeriodRailEl: HTMLElement | null = null;
 	let selectedDate: DateValue = parseDate(todayInputValue());
 	let selectedAccountId = '';
 	let selectedCategoryId = '';
@@ -150,6 +161,17 @@
 		{ value: '24', label: '24 months' },
 		{ value: 'all', label: 'All time' }
 	];
+	const transactionPeriodModeOptions: SelectOption[] = [
+		{ value: 'month', label: 'Month' },
+		{ value: 'year', label: 'Year' }
+	];
+	const transactionViewFilterOptions: SelectOption[] = [
+		{ value: 'all', label: 'All transactions' },
+		{ value: 'household', label: 'Household' },
+		{ value: 'personal', label: 'Personal' },
+		{ value: 'income', label: 'Income' },
+		{ value: 'expense', label: 'Expense' }
+	];
 
 	$: state = $finance;
 	$: activeGroup = state?.groups.find((group) => group.id === state.settings.activeGroupId);
@@ -158,9 +180,9 @@
 			.filter((account) => account.groupId === state.settings.activeGroupId)
 			.map((account, index) => ({ ...account, color: displayColor(account.color, index) })) ?? [];
 	$: accounts = allAccounts.filter(isActive);
-	$: categories =
+	$: allCategories =
 		state?.categories
-			.filter((category) => category.groupId === state.settings.activeGroupId && isActive(category))
+			.filter((category) => category.groupId === state.settings.activeGroupId)
 			.map((category, index) => ({
 				...category,
 				type: normalizeCategoryType(category.type, category.name),
@@ -169,6 +191,7 @@
 				color: displayColor(category.color, index + 1)
 			}))
 			.filter((category) => isCategoryVisibleToUser(category, state?.settings.deviceUserId ?? '')) ?? [];
+	$: categories = allCategories.filter(isActive);
 	$: entries = state?.entries.filter((entry) => entry.groupId === state.settings.activeGroupId && isActive(entry)) ?? [];
 	$: accountUsageCounts = countTransactionUsage(entries, 'accountId');
 	$: categoryUsageCounts = countTransactionUsage(entries, 'categoryId');
@@ -187,17 +210,34 @@
 		label: isActive(account) ? account.name : `${account.name} (Inactive)`,
 		disabled: !isActive(account)
 	}));
-	$: categorySelectOptions = addCategoryOptions.map((category) => ({
+	$: categorySelectOptions = [
+		...addCategoryOptions,
+		...sortByTransactionUsage(
+			getEntryCategoryOptions(
+				allCategories.filter((category) => !isActive(category)),
+				selectedEntryType
+			),
+			categoryUsageCounts
+		)
+	].map((category) => ({
 		value: category.id,
-		label: `${category.name} (${categoryScopeLabel(category.scope)})`
+		label: `${category.name} (${categoryScopeLabel(category.scope)})${isActive(category) ? '' : ' · Inactive'}`,
+		disabled: !isActive(category)
 	}));
-	$: transactionEditCategoryOptions = sortByTransactionUsage(
-		getEntryCategoryOptions(categories, transactionEditType),
-		categoryUsageCounts
-	).map((category) => ({
-			value: category.id,
-			label: `${category.name} (${categoryScopeLabel(category.scope)})`
-		}));
+	$: transactionEditCategoryOptions = [
+		...sortByTransactionUsage(getEntryCategoryOptions(categories, transactionEditType), categoryUsageCounts),
+		...sortByTransactionUsage(
+			getEntryCategoryOptions(
+				allCategories.filter((category) => !isActive(category)),
+				transactionEditType
+			),
+			categoryUsageCounts
+		)
+	].map((category) => ({
+		value: category.id,
+		label: `${category.name} (${categoryScopeLabel(category.scope)})${isActive(category) ? '' : ' · Inactive'}`,
+		disabled: !isActive(category)
+	}));
 	$: settingsCategoryOptions = categories.map((category) => ({
 		value: category.id,
 		label: `${category.name} (${categoryScopeLabel(category.scope)})`
@@ -235,8 +275,8 @@
 		state?.adjustments.filter((adjustment) => adjustment.groupId === state.settings.activeGroupId && isActive(adjustment)) ??
 		[];
 	$: merchants = state?.merchants.filter((merchant) => merchant.groupId === state.settings.activeGroupId && isActive(merchant)) ?? [];
-	$: categoryById = new Map(categories.map((category) => [category.id, category]));
-	$: summaries = buildPeriodSummaries(accounts, categories, entries, adjustments, grain);
+	$: categoryById = new Map(allCategories.map((category) => [category.id, category]));
+	$: summaries = buildPeriodSummaries(accounts, allCategories, entries, adjustments, grain);
 	$: currentSummary = summaries[0];
 	$: householdEntries = entries.filter((entry) => {
 		const category = categoryById.get(entry.categoryId);
@@ -249,6 +289,10 @@
 	$: currentMonthExpenseEntries = currentMonthEntries.filter((entry) => entry.type === 'expense');
 	$: currentMonthIncome = currentMonthIncomeEntries.reduce((sum, entry) => sum + entry.amount, 0);
 	$: currentMonthSpent = currentMonthExpenseEntries.reduce((sum, entry) => sum + entry.amount, 0);
+	$: currentMonthCategoryAmounts = currentMonthEntries.reduce((totals, entry) => {
+		totals.set(entry.categoryId, (totals.get(entry.categoryId) ?? 0) + entry.amount);
+		return totals;
+	}, new Map<string, number>());
 	$: currentMonthHouseholdEntries = householdEntries.filter((entry) => entry.occurredOn.startsWith(currentMonthKey));
 	$: currentMonthHouseholdBalance = currentMonthHouseholdEntries.reduce(
 		(sum, entry) => sum + (entry.type === 'income' ? entry.amount : -entry.amount),
@@ -272,27 +316,75 @@
 	$: personalBalance = personalIncome - personalSpent;
 	$: recentEntries = [...entries].sort((a, b) => b.occurredOn.localeCompare(a.occurredOn)).slice(0, 5);
 	$: allTransactions = [...entries].sort((a, b) => `${b.occurredOn}${b.createdAt}`.localeCompare(`${a.occurredOn}${a.createdAt}`));
+	$: transactionMonthOptions = buildTransactionMonthOptions(allTransactions);
+	$: transactionYearOptions = buildTransactionYearOptions(allTransactions);
+	$: selectedTransactionPeriodLabel =
+		transactionPeriodMode === 'month' ? formatTransactionMonthLabel(selectedTransactionMonth) : selectedTransactionYear;
+	$: desktopPeriodTransactions = filterTransactionsByPeriod(
+		allTransactions,
+		transactionPeriodMode,
+		selectedTransactionMonth,
+		selectedTransactionYear
+	);
+	$: desktopViewTransactions = filterTransactionsByView(desktopPeriodTransactions, transactionViewFilter);
+	$: selectedTransactionViewLabel =
+		transactionViewFilterOptions.find((option) => option.value === transactionViewFilter)?.label ?? 'All transactions';
 	$: selectedTransaction =
 		allTransactions.find((entry) => entry.id === selectedTransactionId) ??
 		(selectedTransactionFallback?.id === selectedTransactionId ? selectedTransactionFallback : null);
 	$: transactionSearchQueryNormalized = normalizeMerchantText(transactionSearchQuery);
 	$: filteredTransactions = filterTransactions(allTransactions, transactionSearchQueryNormalized, transactionSearchMonthsBack);
+	$: desktopFilteredTransactions = filterTransactions(desktopViewTransactions, transactionSearchQueryNormalized, 'all');
+	$: mobileTransactions =
+		mobileTransactionCategoryId && mobileTransactionPeriodKey
+			? allTransactions.filter(
+					(entry) =>
+						entry.categoryId === mobileTransactionCategoryId &&
+						periodKey(entry.occurredOn, mobileTransactionGrain) === mobileTransactionPeriodKey
+				)
+			: allTransactions;
+	$: mobileTransactionCategory = allCategories.find((category) => category.id === mobileTransactionCategoryId);
+	$: mobileTransactionFilterLabel =
+		mobileTransactionCategory && mobileTransactionPeriodKey
+			? `${mobileTransactionCategory.name} · ${readablePeriod(mobileTransactionPeriodKey, mobileTransactionGrain)}`
+			: '';
 	$: searchPageResults = remoteSearchResults ?? filteredTransactions;
 	$: topCategories = (currentSummary?.categories ?? []).filter((item) => Math.abs(item.net) > 0).slice(0, 4);
 	$: homeTiles = topCategories.length
-		? topCategories.map((item) => ({ name: item.categoryName, color: item.categoryColor, amount: Math.abs(item.net) }))
-		: categories.slice(0, 2).map((item) => ({ name: item.name, color: item.color, amount: item.monthlyTarget }));
+		? topCategories.map((item) => ({
+				id: item.categoryId,
+				name: item.categoryName,
+				color: item.categoryColor,
+				amount: Math.abs(item.net)
+			}))
+		: categories.slice(0, 2).map((item) => ({
+				id: item.id,
+				name: item.name,
+				color: item.color,
+				amount: item.monthlyTarget
+			}));
+	$: reviewPeriodSummaries = [...summaries].reverse();
+	$: {
+		if (!summaries.some((summary) => summary.periodKey === selectedReviewPeriodKey)) {
+			selectedReviewPeriodKey = summaries[0]?.periodKey ?? periodKey(todayInputValue(), grain);
+		}
+	}
+	$: selectedReviewSummary = summaries.find((summary) => summary.periodKey === selectedReviewPeriodKey);
+	$: if (reviewPeriodRailEl && selectedReviewPeriodKey) {
+		void centerSelectedReviewPeriod(reviewPeriodRailEl, selectedReviewPeriodKey);
+	}
 	$: statItems = buildStatItems(currentSummary?.categories ?? [], reviewEntryType);
+	$: reviewStatItems = buildStatItems(selectedReviewSummary?.categories ?? [], reviewEntryType);
 	$: reviewTotal =
+		reviewEntryType === 'income'
+			? (selectedReviewSummary?.income ?? reviewStatItems.reduce((sum, item) => sum + item.amount, 0))
+			: (selectedReviewSummary?.spent ?? reviewStatItems.reduce((sum, item) => sum + item.amount, 0));
+	$: desktopReviewTotal =
 		reviewEntryType === 'income'
 			? (currentSummary?.income ?? statItems.reduce((sum, item) => sum + item.amount, 0))
 			: (currentSummary?.spent ?? statItems.reduce((sum, item) => sum + item.amount, 0));
 	$: reviewTotalLabel = reviewEntryType === 'income' ? 'Total received' : 'Total spent';
-	$: reviewTopTransactions = getReviewTopTransactions(entries, currentSummary?.periodKey, grain, reviewEntryType);
-	$: reviewAnchorDate = getReviewAnchorDate(currentSummary?.periodKey, grain);
-	$: reviewRailPrevLabel = getReviewRailLabel(reviewAnchorDate, grain, -1);
-	$: reviewRailCenterLabel = getReviewRailLabel(reviewAnchorDate, grain, 0);
-	$: reviewRailNextLabel = getReviewRailLabel(reviewAnchorDate, grain, 1);
+	$: reviewTopTransactions = getReviewTopTransactions(entries, selectedReviewSummary?.periodKey, grain, reviewEntryType);
 	$: reviewGrainTabIndex = grain === 'month' ? 0 : grain === 'week' ? 1 : 2;
 	$: entryTypeTabIndex = selectedEntryType === 'income' ? 1 : 0;
 	$: expenseCategories = categories.filter((category) => normalizeCategoryType(category.type, category.name) === 'expense');
@@ -315,7 +407,7 @@
 		};
 	});
 	$: selectedSettingsAccount = allAccounts.find((account) => account.id === selectedSettingsAccountId) ?? null;
-	$: selectedSettingsCategory = categories.find((category) => category.id === selectedSettingsCategoryId) ?? null;
+	$: selectedSettingsCategory = allCategories.find((category) => category.id === selectedSettingsCategoryId) ?? null;
 	$: if (selectedSettingsAccount) {
 		selectedSettingsAccountType = selectedSettingsAccount.type;
 	}
@@ -323,19 +415,10 @@
 		selectedSettingsCategoryType = normalizeCategoryType(selectedSettingsCategory.type, selectedSettingsCategory.name);
 		selectedSettingsCategoryScope = normalizeCategoryScope(selectedSettingsCategory.scope);
 	}
-	$: desktopBalanceSeries = summaries.length
-		? summaries.slice(0, 8).reverse()
-		: [
-				{ periodKey: '2026-01', endingBalance: 30 },
-				{ periodKey: '2026-02', endingBalance: 48 },
-				{ periodKey: '2026-03', endingBalance: 36 },
-				{ periodKey: '2026-04', endingBalance: 68 },
-				{ periodKey: '2026-05', endingBalance: 54 },
-				{ periodKey: '2026-06', endingBalance: 76 },
-				{ periodKey: '2026-07', endingBalance: 62 },
-				{ periodKey: '2026-08', endingBalance: 72 }
-			];
-	$: latestBalanceSeriesIndex = Math.max(0, desktopBalanceSeries.length - 1);
+	$: desktopSpendingSeries = summaries.slice(0, 8).reverse();
+	$: desktopSpendingSeriesMax = Math.max(1, ...desktopSpendingSeries.map((summary) => summary.spent));
+	$: desktopSpendingCategoryLegend = buildSpendingCategoryLegend(desktopSpendingSeries);
+	$: latestSpendingSeriesIndex = Math.max(0, desktopSpendingSeries.length - 1);
 	$: desktopHeading = getDesktopHeading(desktopScreen, activeGroup?.name);
 	$: {
 		if (typeof document !== 'undefined') {
@@ -669,6 +752,72 @@
 			.map((item) => item.entry);
 	}
 
+	function formatTransactionMonthLabel(monthKey: string): string {
+		if (!/^\d{4}-\d{2}$/.test(monthKey)) return monthKey;
+		const [year, month] = monthKey.split('-').map(Number);
+		if (month < 1 || month > 12) return monthKey;
+		return new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(
+			new Date(year, month - 1, 1)
+		);
+	}
+
+	function buildTransactionMonthOptions(allEntries: LedgerEntry[]): SelectOption[] {
+		const monthKeys = new Set<string>([todayInputValue().slice(0, 7)]);
+		for (const entry of allEntries) {
+			const monthKey = entry.occurredOn.slice(0, 7);
+			if (/^\d{4}-\d{2}$/.test(monthKey)) monthKeys.add(monthKey);
+		}
+		return [...monthKeys]
+			.sort((a, b) => b.localeCompare(a))
+			.map((value) => ({ value, label: formatTransactionMonthLabel(value) }));
+	}
+
+	function buildTransactionYearOptions(allEntries: LedgerEntry[]): SelectOption[] {
+		const years = new Set<string>([todayInputValue().slice(0, 4)]);
+		for (const entry of allEntries) {
+			const year = entry.occurredOn.slice(0, 4);
+			if (/^\d{4}$/.test(year)) years.add(year);
+		}
+		return [...years]
+			.sort((a, b) => b.localeCompare(a))
+			.map((value) => ({ value, label: value }));
+	}
+
+	function filterTransactionsByPeriod(
+		allEntries: LedgerEntry[],
+		mode: TransactionPeriodMode,
+		month: string,
+		year: string
+	): LedgerEntry[] {
+		const period = mode === 'month' ? month : year;
+		return allEntries.filter((entry) => entry.occurredOn.startsWith(period));
+	}
+
+	function filterTransactionsByView(allEntries: LedgerEntry[], view: TransactionViewFilter): LedgerEntry[] {
+		if (view === 'all') return allEntries;
+		if (view === 'income' || view === 'expense') {
+			return allEntries.filter((entry) => entry.type === view);
+		}
+
+		return allEntries.filter((entry) => {
+			const category = categoryById.get(entry.categoryId);
+			const scope = normalizeCategoryScope(category?.scope);
+			if (view === 'household') return scope === 'household';
+			if (scope !== 'user') return false;
+			if (!category?.ownerUserId) return true;
+			return category.ownerUserId === state?.settings.deviceUserId;
+		});
+	}
+
+	function openDesktopTransactions(view: TransactionViewFilter = 'all'): void {
+		transactionPeriodMode = 'month';
+		selectedTransactionMonth = currentMonthKey;
+		transactionViewFilter = view;
+		transactionSearchQuery = '';
+		desktopSearchOpen = false;
+		desktopScreen = 'transactions';
+	}
+
 	function openTransactionSearch(): void {
 		transactionSearchOrigin = activeScreen;
 		remoteSearchError = '';
@@ -676,8 +825,27 @@
 		activeScreen = 'search';
 	}
 
+	function openMobileTransactions(): void {
+		mobileTransactionCategoryId = '';
+		mobileTransactionPeriodKey = '';
+		activeScreen = 'transactions';
+	}
+
+	function openHomeCategoryTransactions(categoryId: string): void {
+		mobileTransactionCategoryId = categoryId;
+		mobileTransactionPeriodKey = currentSummary?.periodKey ?? periodKey(todayInputValue(), grain);
+		mobileTransactionGrain = grain;
+		activeScreen = 'transactions';
+	}
+
+	function clearMobileTransactionFilter(): void {
+		mobileTransactionCategoryId = '';
+		mobileTransactionPeriodKey = '';
+	}
+
 	async function openDesktopTransactionSearch(): Promise<void> {
 		desktopScreen = 'transactions';
+		transactionViewFilter = 'all';
 		desktopSearchOpen = true;
 		await tick();
 		desktopSearchInput?.focus();
@@ -755,7 +923,7 @@
 			await finance.updateEntry(selectedTransaction.id, formData);
 			transactionEditMode = false;
 			if (navigator.onLine && authSession && state) {
-				await updateTransactionRemote({
+				const serverEntry = await updateTransactionRemote({
 					groupId: state.settings.activeGroupId,
 					transactionId: selectedTransaction.id,
 					accountId: `${formData.get('accountId') ?? ''}`.trim(),
@@ -769,6 +937,7 @@
 					merchant: `${formData.get('merchant') ?? ''}`.trim(),
 					note: `${formData.get('note') ?? ''}`.trim()
 				});
+				await finance.acceptServerEntry(serverEntry);
 			}
 			let synced = false;
 			if (navigator.onLine) {
@@ -922,6 +1091,26 @@
 		];
 	}
 
+	function buildSpendingCategoryLegend(periods: PeriodSummary[]): StatItem[] {
+		const categoryTotals = new Map<string, StatItem>();
+		for (const period of periods) {
+			for (const category of period.categories) {
+				if (category.spent <= 0) continue;
+				const existing = categoryTotals.get(category.categoryId);
+				if (existing) {
+					existing.amount += category.spent;
+				} else {
+					categoryTotals.set(category.categoryId, {
+						name: category.categoryName,
+						color: category.categoryColor,
+						amount: category.spent
+					});
+				}
+			}
+		}
+		return [...categoryTotals.values()].sort((a, b) => b.amount - a.amount);
+	}
+
 	function buildBudgetComparisonItems(
 		expenseOnlyCategories: typeof categories,
 		periodTotals: PeriodCategoryTotal[]
@@ -934,6 +1123,7 @@
 			return {
 				id: category.id,
 				name: category.name,
+				color: category.color,
 				spent,
 				target,
 				fillPercent: Math.max(spent > 0 ? 10 : 4, Math.min(100, fillPercent))
@@ -1027,37 +1217,14 @@ function getEntryCategoryOptions(
 		return new Intl.DateTimeFormat(undefined, { day: 'numeric' }).format(new Date(`${key}T00:00:00`));
 	}
 
-	function getReviewAnchorDate(periodKey: string | undefined, periodGrain: PeriodGrain): Date {
-		if (periodKey) {
-			return periodGrain === 'month' ? new Date(`${periodKey}-01T00:00:00`) : new Date(`${periodKey}T00:00:00`);
-		}
-		return new Date(`${todayInputValue()}T00:00:00`);
-	}
-
-	function shiftReviewDate(date: Date, periodGrain: PeriodGrain, offset: number): Date {
-		const shifted = new Date(date);
-		if (periodGrain === 'day') {
-			shifted.setDate(shifted.getDate() + offset);
-			return shifted;
-		}
-		if (periodGrain === 'week') {
-			shifted.setDate(shifted.getDate() + offset * 7);
-			return shifted;
-		}
-		shifted.setMonth(shifted.getMonth() + offset);
-		return shifted;
-	}
-
-	function getReviewRailLabel(anchorDate: Date, periodGrain: PeriodGrain, offset: number): string {
-		const date = shiftReviewDate(anchorDate, periodGrain, offset);
-		if (periodGrain === 'day') {
-			return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date);
-		}
-		if (periodGrain === 'week') {
-			const prefix = offset === 0 ? 'Week of ' : '';
-			return `${prefix}${new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date)}`;
-		}
-		return new Intl.DateTimeFormat(undefined, { month: 'short' }).format(date);
+	async function centerSelectedReviewPeriod(rail: HTMLElement, periodKeyValue: string): Promise<void> {
+		await tick();
+		const selected = [...rail.querySelectorAll<HTMLButtonElement>('[data-period-key]')].find(
+			(button) => button.dataset.periodKey === periodKeyValue
+		);
+		if (!selected) return;
+		const targetLeft = selected.offsetLeft - (rail.clientWidth - selected.offsetWidth) / 2;
+		rail.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' });
 	}
 
 	function getReviewTopTransactions(
@@ -1444,14 +1611,19 @@ function getEntryCategoryOptions(
 			</section>
 			<div class="payment-cards">
 				{#each homeTiles as category, index}
-					<article class:accent-card={index === 0} class="mini-card">
+					<button
+						type="button"
+						class:accent-card={index === 0}
+						class="mini-card"
+						on:click={() => openHomeCategoryTransactions(category.id)}
+					>
 						<span style={`--swatch:${category.color}`}>
 							{entryIcon(category.name)}
 						</span>
 						<h3>{category.name}</h3>
 						<p>{currency(category.amount)}</p>
 						<small>{grain} view</small>
-					</article>
+					</button>
 				{/each}
 			</div>
 
@@ -1485,7 +1657,7 @@ function getEntryCategoryOptions(
 
 			<section class="section-heading">
 				<h2>Recent Transactions</h2>
-				<button type="button" on:click={() => (activeScreen = 'transactions')}>See all</button>
+				<button type="button" on:click={openMobileTransactions}>See all</button>
 			</section>
 			<div class="transaction-list">
 				{#each recentEntries as entry}
@@ -1528,29 +1700,37 @@ function getEntryCategoryOptions(
 				</Tabs.Root>
 			</div>
 
-			<div class="month-rail">
-				<span>{reviewRailPrevLabel}</span>
-				<strong>{reviewRailCenterLabel}</strong>
-				<span>{reviewRailNextLabel}</span>
+			<div class="month-rail" bind:this={reviewPeriodRailEl} aria-label={`Select ${grain}`}>
+				{#each reviewPeriodSummaries as summary}
+					<button
+						type="button"
+						class:active={summary.periodKey === selectedReviewPeriodKey}
+						aria-current={summary.periodKey === selectedReviewPeriodKey ? 'date' : undefined}
+						data-period-key={summary.periodKey}
+						on:click={() => (selectedReviewPeriodKey = summary.periodKey)}
+					>
+						{shortPeriodLabel(summary.periodKey, grain)}
+					</button>
+				{/each}
 			</div>
 
 			<section class="stat-ring-card">
 				<div class="ring-wrap">
 					<svg class="ring-svg" viewBox="0 0 220 220" aria-label="Category expense ring">
 						<circle class="ring-track" cx="110" cy="110" r="90" pathLength="565" />
-						{#each statItems as item, index}
-							<circle class="ring-segment" cx="110" cy="110" r="90" pathLength="565" style={ringSegmentStyle(statItems, index)} />
+						{#each reviewStatItems as item, index}
+							<circle class="ring-segment" cx="110" cy="110" r="90" pathLength="565" style={ringSegmentStyle(reviewStatItems, index)} />
 						{/each}
 					</svg>
 					<div>
 						<strong>{currency(reviewTotal)}</strong>
-						<span>{currentSummary ? reviewTotalLabel : 'Sample stats'}</span>
+						<span>{selectedReviewSummary ? reviewTotalLabel : 'No activity'}</span>
 					</div>
 				</div>
 			</section>
 
 			<div class="stat-legend">
-				{#each statItems as item}
+				{#each reviewStatItems as item}
 					<div>
 						<span style={`--swatch:${item.color}`}></span>
 						<p>{item.name}</p>
@@ -1562,7 +1742,7 @@ function getEntryCategoryOptions(
 			<section class="review-top-transactions">
 				<div class="section-heading">
 					<h2>Top Transactions</h2>
-					<span>{grain === 'day' ? 'Today' : grain === 'week' ? 'This week' : 'This month'}</span>
+					<span>{selectedReviewSummary ? readablePeriod(selectedReviewSummary.periodKey, grain) : 'No period'}</span>
 				</div>
 				<div class="transaction-list">
 					{#each reviewTopTransactions as entry}
@@ -1745,6 +1925,12 @@ function getEntryCategoryOptions(
 			</header>
 
 			<section class="transaction-table-card">
+				{#if mobileTransactionFilterLabel}
+					<div class="mobile-transaction-filter">
+						<span>{mobileTransactionFilterLabel}</span>
+						<button type="button" on:click={clearMobileTransactionFilter} aria-label="Clear category filter">×</button>
+					</div>
+				{/if}
 				<div class="transaction-table-head">
 					<span>Date</span>
 					<span>Merchant</span>
@@ -1752,7 +1938,7 @@ function getEntryCategoryOptions(
 					<span>Amount</span>
 				</div>
 				<div class="transaction-table">
-					{#each allTransactions as entry}
+					{#each mobileTransactions as entry}
 						<button
 							type="button"
 							aria-label={`Open transaction ${entry.merchant} ${currency(entry.amount)}`}
@@ -1769,7 +1955,11 @@ function getEntryCategoryOptions(
 							</b>
 						</button>
 					{:else}
-						<p class="empty-card">No transactions yet.</p>
+						<p class="empty-card">
+							{mobileTransactionFilterLabel
+								? `No transactions for ${mobileTransactionFilterLabel}.`
+								: 'No transactions yet.'}
+						</p>
 					{/each}
 				</div>
 			</section>
@@ -2090,12 +2280,20 @@ function getEntryCategoryOptions(
 						<h2>Modify categories</h2>
 						<button class="ghost" type="button" on:click={() => openSettingsSubpage('overview')}>Back to settings</button>
 					</div>
-					{#each categories as category}
-						<button class="settings-row-button" type="button" on:click={() => openCategoryEditor(category.id)}>
+					{#each allCategories as category}
+						<button
+							class="settings-row-button"
+							class:inactive-category={!isActive(category)}
+							type="button"
+							on:click={() => openCategoryEditor(category.id)}
+						>
 							<span style={`--swatch:${category.color}`}></span>
 							<div>
 								<strong>{categoryEmoji(category)} {category.name}</strong>
-								<small>{categoryScopeLabel(category.scope)} · {categoryTypeLabel(category.type)} · Target {currency(category.monthlyTarget)}</small>
+								<small>
+									{categoryScopeLabel(category.scope)} · {categoryTypeLabel(category.type)} · Target
+									{currency(category.monthlyTarget)}{isActive(category) ? '' : ' · Inactive'}
+								</small>
 							</div>
 							<b>{currency(currentCategoryTotals.get(category.id)?.net ?? 0)}</b>
 						</button>
@@ -2151,6 +2349,13 @@ function getEntryCategoryOptions(
 							</div>
 							<input name="icon" value={selectedSettingsCategory.icon} placeholder="Emoji icon (e.g. 🛒)" />
 							<input name="color" type="color" value={selectedSettingsCategory.color} title="Category color" />
+							<label class="account-status-toggle">
+								<input name="inactive" type="checkbox" checked={!isActive(selectedSettingsCategory)} />
+								<span>
+									<strong>Inactive category</strong>
+									<small>Keep its transaction history, but prevent it from being selected for new transactions.</small>
+								</span>
+							</label>
 							<button type="submit">Save category</button>
 						</form>
 					{:else}
@@ -2265,7 +2470,7 @@ function getEntryCategoryOptions(
 			class:active={activeScreen === 'transactions' || activeScreen === 'search' || activeScreen === 'transactionDetail'}
 			title="Transactions"
 			type="button"
-			on:click={() => (activeScreen = 'transactions')}
+			on:click={openMobileTransactions}
 		>
 			<ClipboardList size={23} />
 			<span>Transactions</span>
@@ -2310,7 +2515,7 @@ function getEntryCategoryOptions(
 			<a
 				href="#transactions"
 				class:active={desktopScreen === 'transactions' || desktopScreen === 'transactionDetail'}
-				on:click|preventDefault={() => (desktopScreen = 'transactions')}
+				on:click|preventDefault={() => openDesktopTransactions()}
 			>
 				<ClipboardList size={18} /> Transactions
 			</a>
@@ -2397,34 +2602,34 @@ function getEntryCategoryOptions(
 			</div>
 
 		<section class="desktop-kpis">
-			<article>
+			<button type="button" on:click={() => openDesktopTransactions('household')}>
 				<span>Household balance</span>
 				<strong>{currency(currentMonthHouseholdBalance)}</strong>
 				<small>This month · {currentMonthHouseholdEntries.length} transaction{currentMonthHouseholdEntries.length === 1 ? '' : 's'}</small>
-			</article>
-			<article>
+			</button>
+			<button type="button" on:click={() => openDesktopTransactions('personal')}>
 				<span>Personal balance</span>
 				<strong>{currency(personalBalance)}</strong>
 				<small>This month · {currentMonthPersonalEntries.length} personal transaction{currentMonthPersonalEntries.length === 1 ? '' : 's'}</small>
-			</article>
-			<article>
+			</button>
+			<button type="button" on:click={() => openDesktopTransactions('income')}>
 				<span>Income</span>
 				<strong>{currency(currentMonthIncome)}</strong>
 				<small>This month · {currentMonthIncomeEntries.length} transaction{currentMonthIncomeEntries.length === 1 ? '' : 's'}</small>
-			</article>
-			<article>
+			</button>
+			<button type="button" on:click={() => openDesktopTransactions('expense')}>
 				<span>Expense</span>
 				<strong>{currency(currentMonthSpent)}</strong>
 				<small>This month · {currentMonthExpenseEntries.length} transaction{currentMonthExpenseEntries.length === 1 ? '' : 's'}</small>
-			</article>
+			</button>
 		</section>
 
 		<div class="desktop-grid">
 			<section class="desktop-card wide-card">
 				<div class="desktop-card-head">
 					<div>
-						<h2>Total balance overview</h2>
-						<p>This month compared with recent periods</p>
+						<h2>Spending by category</h2>
+						<p>Period totals split across spending categories</p>
 					</div>
 					<AppSelect
 						ariaLabel="Desktop report period"
@@ -2433,23 +2638,45 @@ function getEntryCategoryOptions(
 						triggerClass="desktop-grain-trigger"
 					/>
 				</div>
-				<div class="line-chart">
-					{#each desktopBalanceSeries as summary, index}
-						<span
-							class:latest={index === latestBalanceSeriesIndex}
-							style={`--height:${Math.max(18, Math.min(92, Math.abs(summary.endingBalance || 35) / Math.max(1, Math.abs(currentBalance || 1000)) * 86 + 18))}%;--delay:${index}`}
-						></span>
-					{/each}
-				</div>
-				<div class="line-chart-axis">
-					{#each desktopBalanceSeries as summary}
-						<span>{shortPeriodLabel(summary.periodKey, grain)}</span>
-					{/each}
-				</div>
-				<div class="line-chart-legend">
-					<span class="previous">Previous periods</span>
-					<span class="current">Current period</span>
-				</div>
+				{#if desktopSpendingSeries.length}
+					<div
+						class="stacked-period-chart"
+						style={`--period-count:${desktopSpendingSeries.length}`}
+					>
+						{#each desktopSpendingSeries as summary, index}
+							<div class="stacked-period-column" class:latest={index === latestSpendingSeriesIndex}>
+								<strong>{currency(summary.spent)}</strong>
+								<div class="stacked-period-track">
+									<div
+										class="stacked-period-bar"
+										style={`--height:${summary.spent > 0 ? Math.max(5, (summary.spent / desktopSpendingSeriesMax) * 100) : 0}%`}
+										role="img"
+										aria-label={`${readablePeriod(summary.periodKey, grain)} spending ${currency(summary.spent)}`}
+									>
+										{#each summary.categories.filter((category) => category.spent > 0) as category}
+											<span
+												style={`--segment:${(category.spent / Math.max(1, summary.spent)) * 100}%;--swatch:${category.categoryColor}`}
+												title={`${category.categoryName}: ${currency(category.spent)}`}
+											></span>
+										{/each}
+									</div>
+								</div>
+							</div>
+						{/each}
+					</div>
+					<div class="stacked-period-axis" style={`--period-count:${desktopSpendingSeries.length}`}>
+						{#each desktopSpendingSeries as summary, index}
+							<span class:latest={index === latestSpendingSeriesIndex}>{shortPeriodLabel(summary.periodKey, grain)}</span>
+						{/each}
+					</div>
+					<div class="stacked-period-legend">
+						{#each desktopSpendingCategoryLegend as category}
+							<span style={`--swatch:${category.color}`}>{category.name}</span>
+						{/each}
+					</div>
+				{:else}
+					<p class="muted">No spending data yet.</p>
+				{/if}
 			</section>
 
 			<section class="desktop-card desktop-stat-card" id="review">
@@ -2469,7 +2696,7 @@ function getEntryCategoryOptions(
 					</svg>
 					<div>
 						<span>{reviewEntryType === 'income' ? 'This month income' : 'This month expense'}</span>
-						<strong>{currency(reviewTotal)}</strong>
+						<strong>{currency(desktopReviewTotal)}</strong>
 					</div>
 				</div>
 				<div class="desktop-legend">
@@ -2494,7 +2721,7 @@ function getEntryCategoryOptions(
 				<div class="bar-chart">
 					{#each budgetComparisonItems as item}
 						<div>
-							<div class="bar-stack" aria-hidden="true">
+							<div class="bar-stack" style={`--swatch:${item.color}`} aria-hidden="true">
 								<i class="bar-target"></i>
 								<i class="bar-spent" style={`--bar:${item.fillPercent}%`}></i>
 							</div>
@@ -2570,7 +2797,10 @@ function getEntryCategoryOptions(
 								<strong>{category.name}</strong>
 								<small>{categoryScopeLabel(category.scope)} · {categoryTypeLabel(category.type)} · Target {currency(category.monthlyTarget)}</small>
 							</div>
-							<b class="desktop-row-action">Edit</b>
+							<div class="desktop-category-row-summary">
+								<b>{currency(currentMonthCategoryAmounts.get(category.id) ?? 0)}</b>
+								<small>This month · Edit</small>
+							</div>
 						</button>
 					{/each}
 				</div>
@@ -2601,7 +2831,7 @@ function getEntryCategoryOptions(
 					<h2>Recent transactions</h2>
 					<p>Latest shared group activity</p>
 				</div>
-				<button type="button" on:click={() => (desktopScreen = 'transactions')}>Open full table</button>
+				<button type="button" on:click={() => openDesktopTransactions()}>Open full table</button>
 			</div>
 			<div class="desktop-table">
 				<div class="desktop-table-head">
@@ -2644,9 +2874,42 @@ function getEntryCategoryOptions(
 					<div class="desktop-card-head">
 						<div>
 							<h2>Transactions</h2>
-							<p>All shared ledger entries in one table.</p>
+							<p>
+								{selectedTransactionPeriodLabel} · {selectedTransactionViewLabel} · {desktopFilteredTransactions.length}
+								{desktopFilteredTransactions.length === 1 ? 'transaction' : 'transactions'}
+							</p>
 						</div>
 						<button type="button" on:click={() => (desktopScreen = 'add')}><Plus size={17} /> Add transaction</button>
+					</div>
+					<div class="desktop-transaction-period-controls" aria-label="Transaction period">
+						<span>Show by</span>
+						<AppSelect
+							ariaLabel="Group transactions by month or year"
+							bind:value={transactionPeriodMode}
+							options={transactionPeriodModeOptions}
+							triggerClass="desktop-period-mode-trigger"
+						/>
+						{#if transactionPeriodMode === 'month'}
+							<AppSelect
+								ariaLabel="Transaction month"
+								bind:value={selectedTransactionMonth}
+								options={transactionMonthOptions}
+								triggerClass="desktop-period-value-trigger"
+							/>
+						{:else}
+							<AppSelect
+								ariaLabel="Transaction year"
+								bind:value={selectedTransactionYear}
+								options={transactionYearOptions}
+								triggerClass="desktop-period-value-trigger"
+							/>
+						{/if}
+						<AppSelect
+							ariaLabel="Filter transactions"
+							bind:value={transactionViewFilter}
+							options={transactionViewFilterOptions}
+							triggerClass="desktop-transaction-filter-trigger"
+						/>
 					</div>
 					<div class="desktop-table">
 						<div class="desktop-table-head">
@@ -2656,7 +2919,7 @@ function getEntryCategoryOptions(
 							<span>Account</span>
 							<span>Amount</span>
 						</div>
-						{#each filteredTransactions as entry}
+						{#each desktopFilteredTransactions as entry}
 							<button
 								class="desktop-transaction-row"
 								type="button"
@@ -2670,7 +2933,11 @@ function getEntryCategoryOptions(
 								<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{currency(entry.amount)}</b>
 							</button>
 						{:else}
-							<p class="muted">{transactionSearchQueryNormalized ? 'No matching transactions.' : 'No transactions yet.'}</p>
+							<p class="muted">
+								{transactionSearchQueryNormalized
+									? `No matching transactions in ${selectedTransactionPeriodLabel}.`
+									: `No transactions in ${selectedTransactionPeriodLabel}.`}
+							</p>
 						{/each}
 					</div>
 				</section>
@@ -2901,7 +3168,7 @@ function getEntryCategoryOptions(
 							</button>
 						</div>
 						<div class="desktop-account-list">
-							{#each categories as category}
+							{#each allCategories as category}
 								<Collapsible.Root
 									open={selectedSettingsCategoryId === category.id}
 									onOpenChange={(open) => {
@@ -2909,16 +3176,24 @@ function getEntryCategoryOptions(
 										if (open) desktopAddCategoryWizardOpen = false;
 									}}
 								>
-									<Collapsible.Trigger class="desktop-account-row">
+									<Collapsible.Trigger
+										class={`desktop-account-row${isActive(category) ? '' : ' inactive-category'}`}
+									>
 										<div class="entity-lead">
 											<span class="entity-icon">{categoryEmoji(category)}</span>
 											<span style={`--swatch:${category.color}`}></span>
 										</div>
 										<div>
 											<strong>{category.name}</strong>
-											<small>{categoryScopeLabel(category.scope)} · {categoryTypeLabel(category.type)} · Target {currency(category.monthlyTarget)}</small>
+											<small>
+												{categoryScopeLabel(category.scope)} · {categoryTypeLabel(category.type)} · Target
+												{currency(category.monthlyTarget)}{isActive(category) ? '' : ' · Inactive'}
+											</small>
 										</div>
-										<b class="desktop-row-action">{selectedSettingsCategoryId === category.id ? 'Close' : 'Edit'}</b>
+										<div class="desktop-category-row-summary">
+											<b>{currency(currentMonthCategoryAmounts.get(category.id) ?? 0)}</b>
+											<small>{selectedSettingsCategoryId === category.id ? 'Close' : 'This month · Edit'}</small>
+										</div>
 									</Collapsible.Trigger>
 									<Collapsible.Content forceMount>
 										{#snippet child({ props, open })}
@@ -2956,6 +3231,13 @@ function getEntryCategoryOptions(
 													</div>
 													<input name="icon" value={category.icon} placeholder="Emoji icon (e.g. 🛒)" />
 													<input name="color" type="color" value={category.color} title="Category color" />
+													<label class="account-status-toggle">
+														<input name="inactive" type="checkbox" checked={!isActive(category)} />
+														<span>
+															<strong>Inactive category</strong>
+															<small>Keep its history, but prevent it from being selected for new transactions.</small>
+														</span>
+													</label>
 													<div class="desktop-inline-wizard-actions">
 														<button type="submit">Save category</button>
 														<button class="ghost" type="button" on:click={() => (selectedSettingsCategoryId = '')}>Cancel</button>
@@ -3008,7 +3290,7 @@ function getEntryCategoryOptions(
 							</svg>
 							<div>
 								<span>{currentSummary ? readablePeriod(currentSummary.periodKey, grain) : 'No period yet'}</span>
-								<strong>{currency(reviewTotal)}</strong>
+								<strong>{currency(desktopReviewTotal)}</strong>
 							</div>
 						</div>
 						<div class="desktop-legend">

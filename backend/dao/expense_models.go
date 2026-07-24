@@ -47,25 +47,25 @@ type ExpenseCategory struct {
 func (ExpenseCategory) TableName() string { return QualifiedTable("expense_categories") }
 
 type ExpenseEntry struct {
-	ID         string         `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
-	GroupID    string         `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
-	AccountID  string         `gorm:"column:account_id;type:uuid;not null;index" json:"accountId"`
-	CategoryID string         `gorm:"column:category_id;type:uuid;not null;index" json:"categoryId"`
-	Type       string         `gorm:"column:type;type:text;not null;check:type in ('expense','income')" json:"type"`
-	Amount     int            `gorm:"column:amount;not null;check:amount >= 0" json:"amount"`
-	Currency   string         `gorm:"column:currency;type:text;not null;default:'SGD'" json:"currency"`
-	BaseAmount int            `gorm:"column:base_amount;not null;default:0" json:"baseAmount"`
-	BaseCurrency string       `gorm:"column:base_currency;type:text;not null;default:'SGD'" json:"baseCurrency"`
-	FxRate     float64        `gorm:"column:fx_rate;type:numeric(20,10);not null;default:1" json:"fxRate"`
-	FxRateDate string         `gorm:"column:fx_rate_date;type:date;not null" json:"fxRateDate"`
-	OccurredOn string         `gorm:"column:occurred_on;type:date;not null" json:"occurredOn"`
-	Merchant   string         `gorm:"column:merchant;type:text;not null" json:"merchant"`
-	Note       string         `gorm:"column:note;type:text;not null;default:''" json:"note"`
-	Metadata   map[string]any `gorm:"column:metadata;type:jsonb;serializer:json;not null;default:'{}'" json:"metadata"`
-	CreatedBy  *string        `gorm:"column:created_by;type:uuid" json:"createdBy,omitempty"`
-	CreatedAt  time.Time      `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
-	UpdatedAt  time.Time      `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
-	DeletedAt  *time.Time     `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
+	ID           string         `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	GroupID      string         `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
+	AccountID    string         `gorm:"column:account_id;type:uuid;not null;index" json:"accountId"`
+	CategoryID   string         `gorm:"column:category_id;type:uuid;not null;index" json:"categoryId"`
+	Type         string         `gorm:"column:type;type:text;not null;check:type in ('expense','income')" json:"type"`
+	Amount       int            `gorm:"column:amount;not null;check:amount >= 0" json:"amount"`
+	Currency     string         `gorm:"column:currency;type:text;not null;default:'SGD'" json:"currency"`
+	BaseAmount   int            `gorm:"column:base_amount;not null;default:0" json:"baseAmount"`
+	BaseCurrency string         `gorm:"column:base_currency;type:text;not null;default:'SGD'" json:"baseCurrency"`
+	FxRate       float64        `gorm:"column:fx_rate;type:numeric(20,10);not null;default:1" json:"fxRate"`
+	FxRateDate   string         `gorm:"column:fx_rate_date;type:date;not null;default:CURRENT_DATE" json:"fxRateDate"`
+	OccurredOn   string         `gorm:"column:occurred_on;type:date;not null" json:"occurredOn"`
+	Merchant     string         `gorm:"column:merchant;type:text;not null" json:"merchant"`
+	Note         string         `gorm:"column:note;type:text;not null;default:''" json:"note"`
+	Metadata     map[string]any `gorm:"column:metadata;type:jsonb;serializer:json;not null;default:'{}'" json:"metadata"`
+	CreatedBy    *string        `gorm:"column:created_by;type:uuid" json:"createdBy,omitempty"`
+	CreatedAt    time.Time      `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
+	UpdatedAt    time.Time      `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
+	DeletedAt    *time.Time     `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
 }
 
 func (ExpenseEntry) TableName() string { return QualifiedTable("expense_entries") }
