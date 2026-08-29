@@ -42,6 +42,10 @@ export interface LedgerEntry extends SyncableRecord {
 	type: EntryType;
 	amount: number;
 	currency: string;
+	baseAmount: number;
+	baseCurrency: string;
+	fxRate: number;
+	fxRateDate: string;
 	occurredOn: string;
 	merchant: string;
 	note: string;
@@ -67,6 +71,7 @@ export interface AppSettings {
 	id: 'settings';
 	activeGroupId: string;
 	deviceUserId: string;
+	baseCurrency: string;
 	lastSyncedAt?: string | null;
 }
 

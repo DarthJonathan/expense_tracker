@@ -24,15 +24,48 @@ export function cents(value: FormDataEntryValue | number | string | null | undef
 	return Number.isFinite(parsed) ? Math.round(parsed * 100) : 0;
 }
 
-export function currency(amountInCents: number): string {
-	return new Intl.NumberFormat(undefined, {
-		style: 'currency',
-		currency: 'SGD'
-	}).format(amountInCents / 100);
+export function normalizeCurrencyCode(value: string | null | undefined, fallback = 'SGD'): string {
+	const normalized = String(value ?? '')
+		.trim()
+		.toUpperCase();
+	return /^[A-Z]{3}$/.test(normalized) ? normalized : fallback;
 }
 
-export function formatSignedCurrency(amountInCents: number): string {
-	const value = currency(Math.abs(amountInCents));
+export function currency(amountInCents: number, currencyCode = 'SGD'): string {
+	const normalizedCurrency = normalizeCurrencyCode(currencyCode);
+	try {
+		return new Intl.NumberFormat(undefined, {
+			style: 'currency',
+			currency: normalizedCurrency
+		}).format(amountInCents / 100);
+	} catch {
+		return `${normalizedCurrency} ${(amountInCents / 100).toFixed(2)}`;
+	}
+}
+
+export function entryAmountInBaseCurrency(
+	entry: { amount: number; currency?: string; baseAmount?: number; baseCurrency?: string },
+	baseCurrency = 'SGD'
+): number {
+	const targetCurrency = normalizeCurrencyCode(baseCurrency);
+	const entryCurrency = normalizeCurrencyCode(entry.currency);
+	if (entryCurrency === targetCurrency) return entry.amount;
+
+	const storedBaseCurrency = normalizeCurrencyCode(entry.baseCurrency, '');
+	if (
+		storedBaseCurrency === targetCurrency &&
+		Number.isFinite(entry.baseAmount) &&
+		((entry.baseAmount ?? 0) > 0 || entry.amount === 0)
+	) {
+		return entry.baseAmount ?? 0;
+	}
+
+	// A foreign-currency entry awaiting server conversion must not be counted 1:1.
+	return 0;
+}
+
+export function formatSignedCurrency(amountInCents: number, currencyCode = 'SGD'): string {
+	const value = currency(Math.abs(amountInCents), currencyCode);
 	return amountInCents < 0 ? `-${value}` : value;
 }
 

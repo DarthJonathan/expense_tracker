@@ -14,7 +14,7 @@ import type {
 	LedgerEntry,
 	Merchant
 } from './types';
-import { cents, isoNow, makeId, normalizeText, todayInputValue } from './utils';
+import { cents, isoNow, makeId, normalizeCurrencyCode, normalizeText, todayInputValue } from './utils';
 
 interface SyncStatus {
 	state: 'idle' | 'syncing' | 'offline' | 'error';
@@ -31,6 +31,29 @@ function touch<T extends { updatedAt: string; deletedAt?: string | null }>(recor
 function updateList<T extends { id: string }>(records: T[], record: T): T[] {
 	const exists = records.some((item) => item.id === record.id);
 	return exists ? records.map((item) => (item.id === record.id ? record : item)) : [record, ...records];
+}
+
+function mergeFreshestRecords<T extends { id: string; updatedAt: string }>(current: T[], synced: T[]): T[] {
+	const records = new Map(current.map((record) => [record.id, record]));
+	for (const incoming of synced) {
+		const existing = records.get(incoming.id);
+		if (!existing || new Date(incoming.updatedAt).getTime() >= new Date(existing.updatedAt).getTime()) {
+			records.set(incoming.id, incoming);
+		}
+	}
+	return [...records.values()];
+}
+
+function reconcileSyncedState(current: FinanceState, synced: FinanceState): FinanceState {
+	return {
+		...synced,
+		groups: mergeFreshestRecords(current.groups, synced.groups),
+		accounts: mergeFreshestRecords(current.accounts, synced.accounts),
+		categories: mergeFreshestRecords(current.categories, synced.categories),
+		entries: mergeFreshestRecords(current.entries, synced.entries),
+		adjustments: mergeFreshestRecords(current.adjustments, synced.adjustments),
+		merchants: mergeFreshestRecords(current.merchants, synced.merchants)
+	};
 }
 
 function normalizeMerchantKey(value: string): string {
@@ -59,9 +82,8 @@ export const finance = {
 
 	async init() {
 		const loaded = await loadFinanceState();
-		const normalizedEntries = loaded.entries.map((entry) =>
-			entry.currency === 'SGD' ? entry : { ...entry, currency: 'SGD', updatedAt: isoNow() }
-		);
+		const baseCurrency = normalizeCurrencyCode(loaded.settings.baseCurrency);
+		const normalizedEntries = loaded.entries.map((entry) => normalizeLedgerEntry(entry, baseCurrency));
 		financeState.set({ ...loaded, entries: normalizedEntries });
 
 		if (normalizedEntries.some((entry, index) => entry !== loaded.entries[index])) {
@@ -76,6 +98,10 @@ export const finance = {
 		const groupId = state.settings.activeGroupId;
 		const now = isoNow();
 		const type = normalizeText(formData.get('type'), 'expense') as EntryType;
+		const amount = cents(formData.get('amount'));
+		const currency = normalizeCurrencyCode(normalizeText(formData.get('currency'), 'SGD'));
+		const baseCurrency = normalizeCurrencyCode(state.settings.baseCurrency);
+		const occurredOn = normalizeText(formData.get('occurredOn'), todayInputValue());
 		const categoryId = normalizeText(formData.get('categoryId'));
 		const category = state.categories.find((item) => {
 			if (item.id !== categoryId || item.groupId !== groupId || item.deletedAt) return false;
@@ -96,9 +122,13 @@ export const finance = {
 			accountId: normalizeText(formData.get('accountId')),
 			categoryId,
 			type,
-			amount: cents(formData.get('amount')),
-			currency: 'SGD',
-			occurredOn: normalizeText(formData.get('occurredOn'), todayInputValue()),
+			amount,
+			currency,
+			baseAmount: currency === baseCurrency ? amount : 0,
+			baseCurrency,
+			fxRate: currency === baseCurrency ? 1 : 0,
+			fxRateDate: occurredOn,
+			occurredOn,
 			merchant: normalizeText(formData.get('merchant'), 'Untitled'),
 			note: normalizeText(formData.get('note')),
 			metadata: { categorySource: 'manual', categoryConfidence: 1 },
@@ -123,6 +153,17 @@ export const finance = {
 
 		const groupId = state.settings.activeGroupId;
 		const type = normalizeText(formData.get('type'), existing.type) as EntryType;
+		const amount = cents(formData.get('amount'));
+		const currency = normalizeCurrencyCode(normalizeText(formData.get('currency'), existing.currency || 'SGD'));
+		const baseCurrency = normalizeCurrencyCode(state.settings.baseCurrency);
+		const occurredOn = normalizeText(formData.get('occurredOn'), existing.occurredOn);
+		const accountId = normalizeText(formData.get('accountId'), existing.accountId);
+		const account = state.accounts.find(
+			(item) => item.id === accountId && item.groupId === groupId && (!item.deletedAt || item.id === existing.accountId)
+		);
+		if (!account) {
+			throw new Error('Account not found for this household.');
+		}
 		const categoryId = normalizeText(formData.get('categoryId'), existing.categoryId);
 		const category = state.categories.find((item) => {
 			if (item.id !== categoryId || item.groupId !== groupId || item.deletedAt) return false;
@@ -142,12 +183,16 @@ export const finance = {
 
 		const next: LedgerEntry = touch({
 			...existing,
-			accountId: normalizeText(formData.get('accountId'), existing.accountId),
+			accountId,
 			categoryId,
 			type,
-			amount: cents(formData.get('amount')),
-			currency: 'SGD',
-			occurredOn: normalizeText(formData.get('occurredOn'), existing.occurredOn),
+			amount,
+			currency,
+			baseAmount: currency === baseCurrency ? amount : 0,
+			baseCurrency,
+			fxRate: currency === baseCurrency ? 1 : 0,
+			fxRateDate: occurredOn,
+			occurredOn,
 			merchant: normalizeText(formData.get('merchant'), existing.merchant),
 			note: normalizeText(formData.get('note'), existing.note),
 			metadata: { ...existing.metadata, categorySource: 'manual', categoryConfidence: 1 }
@@ -159,6 +204,20 @@ export const finance = {
 
 	async acceptServerEntry(entry: LedgerEntry) {
 		await mutate('entries', 'entries', entry);
+	},
+
+	async deleteEntry(entryId: string) {
+		const state = get(financeState);
+		if (!state) return;
+
+		const existing = state.entries.find((entry) => entry.id === entryId && !entry.deletedAt);
+		if (!existing) {
+			throw new Error('Transaction not found.');
+		}
+
+		const deletedAt = isoNow();
+		const next = touch({ ...existing, deletedAt });
+		await mutate('entries', 'entries', next);
 	},
 
 	async addAccount(formData: FormData) {
@@ -303,12 +362,13 @@ export const finance = {
 
 		try {
 			syncStatus.set({ state: 'syncing', message: 'Syncing with backend API...' });
-			const synced = await syncFinanceState(state);
+			const synced = await syncFinanceState(state, () => get(financeState) ?? state);
 			await patchSettings({
 				activeGroupId: synced.settings.activeGroupId,
+				baseCurrency: synced.settings.baseCurrency,
 				lastSyncedAt: synced.settings.lastSyncedAt
 			});
-			financeState.set(synced);
+			financeState.update((current) => (current ? reconcileSyncedState(current, synced) : synced));
 			syncStatus.set({ state: 'idle', message: 'Synced' });
 			return true;
 		} catch (error) {
@@ -320,6 +380,31 @@ export const finance = {
 		}
 	}
 };
+
+function normalizeLedgerEntry(entry: LedgerEntry, fallbackBaseCurrency: string): LedgerEntry {
+	const currency = normalizeCurrencyCode(entry.currency);
+	const baseCurrency = normalizeCurrencyCode(entry.baseCurrency, fallbackBaseCurrency);
+	const sameCurrency = currency === baseCurrency;
+	const baseAmount = sameCurrency
+		? entry.amount
+		: Number.isFinite(entry.baseAmount) && entry.baseAmount > 0
+			? entry.baseAmount
+			: 0;
+	const fxRate = sameCurrency ? 1 : Number.isFinite(entry.fxRate) && entry.fxRate > 0 ? entry.fxRate : 0;
+	const fxRateDate = entry.fxRateDate || entry.occurredOn;
+
+	if (
+		entry.currency === currency &&
+		entry.baseCurrency === baseCurrency &&
+		entry.baseAmount === baseAmount &&
+		entry.fxRate === fxRate &&
+		entry.fxRateDate === fxRateDate
+	) {
+		return entry;
+	}
+
+	return { ...entry, currency, baseCurrency, baseAmount, fxRate, fxRateDate };
+}
 
 async function upsertMerchantRecord(state: FinanceState, merchantName: string, occurredOn: string): Promise<void> {
 	const normalizedName = normalizeMerchantKey(merchantName);

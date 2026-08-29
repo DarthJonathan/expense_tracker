@@ -80,6 +80,10 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 			}
 
 			for _, entry := range filterEntriesByGroup(req.Entries, sourceGroupID, groupID) {
+				entry, err = categorizer.prepareSyncedEntryFX(ctx, entry, baseCurrency)
+				if err != nil {
+					return fmt.Errorf("prepare fx for entry %s: %w", entry.ID, err)
+				}
 				accepted, err := upsertEntry(tx, entry)
 				if err != nil {
 					return fmt.Errorf("upsert entry %s: %w", entry.ID, err)

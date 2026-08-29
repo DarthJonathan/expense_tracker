@@ -7,7 +7,7 @@ import type {
 	PeriodGrain,
 	PeriodSummary
 } from './types';
-import { isActive } from './utils';
+import { entryAmountInBaseCurrency, isActive } from './utils';
 
 export function periodKey(dateValue: string, grain: PeriodGrain): string {
 	const date = new Date(`${dateValue}T00:00:00`);
@@ -42,10 +42,16 @@ export function getOpeningBalance(accounts: Account[]): number {
 	return accounts.filter(isActive).reduce((sum, account) => sum + account.openingBalance, 0);
 }
 
-export function getCurrentBalance(accounts: Account[], entries: LedgerEntry[]): number {
+export function getCurrentBalance(accounts: Account[], entries: LedgerEntry[], baseCurrency = 'SGD'): number {
 	return (
 		getOpeningBalance(accounts) +
-		entries.filter(isActive).reduce((sum, entry) => sum + (entry.type === 'income' ? entry.amount : -entry.amount), 0)
+		entries
+			.filter(isActive)
+			.reduce(
+				(sum, entry) =>
+					sum + (entry.type === 'income' ? entryAmountInBaseCurrency(entry, baseCurrency) : -entryAmountInBaseCurrency(entry, baseCurrency)),
+				0
+			)
 	);
 }
 
@@ -54,7 +60,8 @@ export function buildPeriodSummaries(
 	categories: Category[],
 	entries: LedgerEntry[],
 	adjustments: CategoryAdjustment[],
-	grain: PeriodGrain
+	grain: PeriodGrain,
+	baseCurrency = 'SGD'
 ): PeriodSummary[] {
 	const categoryMap = new Map(categories.map((category) => [category.id, category]));
 	const summaries = new Map<string, PeriodSummary>();
@@ -104,15 +111,16 @@ export function buildPeriodSummaries(
 	for (const entry of sortedEntries) {
 		const summary = ensureSummary(periodKey(entry.occurredOn, grain));
 		const categoryTotal = ensureCategory(summary, entry.categoryId);
+		const reportAmount = entryAmountInBaseCurrency(entry, baseCurrency);
 
 		if (entry.type === 'expense') {
-			summary.spent += entry.amount;
-			categoryTotal.spent += entry.amount;
-			categoryTotal.net -= entry.amount;
+			summary.spent += reportAmount;
+			categoryTotal.spent += reportAmount;
+			categoryTotal.net -= reportAmount;
 		} else {
-			summary.income += entry.amount;
-			categoryTotal.income += entry.amount;
-			categoryTotal.net += entry.amount;
+			summary.income += reportAmount;
+			categoryTotal.income += reportAmount;
+			categoryTotal.net += reportAmount;
 		}
 
 		summary.netCashFlow = summary.income - summary.spent;

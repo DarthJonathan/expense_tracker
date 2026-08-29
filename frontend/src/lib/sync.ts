@@ -10,7 +10,7 @@ import type {
 	LedgerEntry,
 	Merchant
 } from './types';
-import { isoNow } from './utils';
+import { isoNow, normalizeCurrencyCode } from './utils';
 
 interface SyncPayload {
 	settings: FinanceState['settings'];
@@ -23,6 +23,7 @@ interface SyncPayload {
 }
 
 interface SyncResponse {
+	settings?: FinanceState['settings'];
 	groups: Group[];
 	accounts: Account[];
 	categories: Category[];
@@ -38,12 +39,24 @@ interface WrappedSyncResponse {
 	data?: SyncResponse;
 }
 
-function newerOnly<T extends { id: string; updatedAt: string }>(local: T[], remote: T[]): T[] {
+function newerOnly<T extends { id: string; updatedAt: string }>(
+	local: T[],
+	remote: T[],
+	acceptCanonicalEqualTimestamp = false
+): T[] {
 	const localMap = new Map(local.map((record) => [record.id, record]));
 
 	return remote.filter((remoteRecord) => {
 		const localRecord = localMap.get(remoteRecord.id);
-		return !localRecord || new Date(remoteRecord.updatedAt).getTime() > new Date(localRecord.updatedAt).getTime();
+		if (!localRecord) return true;
+		const remoteUpdatedAt = new Date(remoteRecord.updatedAt).getTime();
+		const localUpdatedAt = new Date(localRecord.updatedAt).getTime();
+		return (
+			remoteUpdatedAt > localUpdatedAt ||
+			(acceptCanonicalEqualTimestamp &&
+				remoteUpdatedAt === localUpdatedAt &&
+				JSON.stringify(remoteRecord) !== JSON.stringify(localRecord))
+		);
 	});
 }
 
@@ -76,7 +89,10 @@ async function syncWithBackend(syncPayload: SyncPayload): Promise<SyncResponse> 
 	return raw;
 }
 
-export async function syncFinanceState(state: FinanceState): Promise<FinanceState> {
+export async function syncFinanceState(
+	state: FinanceState,
+	getLatestState: () => FinanceState = () => state
+): Promise<FinanceState> {
 	const groupId = state.settings.activeGroupId;
 	const inGroup = <T extends { groupId: string }>(records: T[]) => records.filter((record) => record.groupId === groupId);
 	const payload: SyncPayload = {
@@ -96,36 +112,40 @@ export async function syncFinanceState(state: FinanceState): Promise<FinanceStat
 	const entries = backendData.entries ?? [];
 	const adjustments = backendData.adjustments ?? [];
 	const merchants = backendData.merchants ?? [];
+	const latestState = getLatestState();
 	const remoteGroupIds = groups.map((group) => group.id);
 	const resolvedActiveGroupId =
-		remoteGroupIds.length > 0 && !remoteGroupIds.includes(state.settings.activeGroupId)
+		latestState.settings.activeGroupId !== groupId
+			? latestState.settings.activeGroupId
+			: remoteGroupIds.length > 0 && !remoteGroupIds.includes(latestState.settings.activeGroupId)
 			? remoteGroupIds[0]
-			: state.settings.activeGroupId;
+			: latestState.settings.activeGroupId;
 
 	const remote = {
-		groups: newerOnly(state.groups, groups),
-		accounts: newerOnly(state.accounts, accounts),
-		categories: newerOnly(state.categories, categories),
-		entries: newerOnly(state.entries, entries),
-		adjustments: newerOnly(state.adjustments, adjustments),
-		merchants: newerOnly(state.merchants, merchants)
+		groups: newerOnly(latestState.groups, groups),
+		accounts: newerOnly(latestState.accounts, accounts),
+		categories: newerOnly(latestState.categories, categories),
+		entries: newerOnly(latestState.entries, entries, true),
+		adjustments: newerOnly(latestState.adjustments, adjustments),
+		merchants: newerOnly(latestState.merchants, merchants)
 	};
 
 	await mergeRemoteState(remote);
 
 	return {
-		...state,
+		...latestState,
 		settings: {
-			...state.settings,
+			...latestState.settings,
 			activeGroupId: resolvedActiveGroupId,
+			baseCurrency: normalizeCurrencyCode(backendData.settings?.baseCurrency ?? latestState.settings.baseCurrency),
 			lastSyncedAt: backendData.syncedAt || isoNow()
 		},
-		groups: mergeById(state.groups, remote.groups),
-		accounts: mergeById(state.accounts, remote.accounts),
-		categories: mergeById(state.categories, remote.categories),
-		entries: mergeById(state.entries, remote.entries),
-		adjustments: mergeById(state.adjustments, remote.adjustments),
-		merchants: mergeById(state.merchants, remote.merchants)
+		groups: mergeById(latestState.groups, remote.groups),
+		accounts: mergeById(latestState.accounts, remote.accounts),
+		categories: mergeById(latestState.categories, remote.categories),
+		entries: mergeById(latestState.entries, remote.entries),
+		adjustments: mergeById(latestState.adjustments, remote.adjustments),
+		merchants: mergeById(latestState.merchants, remote.merchants)
 	};
 }
 

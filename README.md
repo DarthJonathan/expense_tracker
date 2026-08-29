@@ -60,6 +60,26 @@ Backend env:
 - `JWT_SECRET`
 - `JWT_TOKEN_EXPIRY_HOURS`
 
+## Apple Shortcut automation
+
+Authenticated Apple Shortcuts can create a transaction with `POST /api/v1/entries/apple` (the
+`/api/v1/entries/automation` alias accepts the same payload):
+
+```json
+{
+  "createdAt": "2026-08-09T12:30:00+08:00",
+  "accountType": "card",
+  "merchant": "Example merchant",
+  "amount": "12.34",
+  "currency": "USD",
+  "device": "iPhone"
+}
+```
+
+`currency` is optional and defaults to `SGD`. Amounts are stored in their original currency and
+converted to the user's base currency using the transaction date. The response includes
+`baseAmount`, `baseCurrency`, `fxRate`, and `fxRateDate`.
+
 ## Notes
 
 - Sync is still offline-first: local changes are saved immediately and pushed when online.

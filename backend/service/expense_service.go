@@ -18,7 +18,11 @@ import (
 
 type ExpenseService struct {
 	DB *gorm.DB
-	FX *FXService
+	FX FXRateResolver
+}
+
+type FXRateResolver interface {
+	ResolveRate(ctx context.Context, from string, to string, occurredOn string) (rate float64, rateDate string, err error)
 }
 
 func NewExpenseService(db *gorm.DB) *ExpenseService {
@@ -329,7 +333,7 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 		metadata["amountRaw"] = strings.TrimSpace(string(req.Amount))
 		amount = 0
 	}
-	baseCurrency, err := s.resolveUserBaseCurrency(ctx, trimmedUserID)
+	currencyCode, err := normalizeCurrencyCode(req.Currency)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +343,7 @@ func (s *ExpenseService) CreateAutomationEntry(ctx context.Context, authUserID s
 		CategoryID: "",
 		Type:       entryType,
 		Amount:     amount,
-		Currency:   baseCurrency,
+		Currency:   currencyCode,
 		OccurredOn: occurredOn,
 		Merchant:   merchant,
 		Note:       "",
@@ -438,7 +442,10 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 	if err != nil {
 		return nil, err
 	}
-	baseAmount, fxRate, fxRateDate := s.convertToBaseAmount(ctx, req.Amount, currencyCode, baseCurrency, occurredOn)
+	baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(ctx, req.Amount, currencyCode, baseCurrency, occurredOn)
+	if err != nil {
+		return nil, err
+	}
 
 	id, err := uuid.GenerateUUID()
 	if err != nil {
@@ -597,6 +604,21 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 		next.Note = strings.TrimSpace(*req.Note)
 	}
 
+	if next.AccountID != current.AccountID {
+		var activeAccountID string
+		if err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+			select id::text
+			from %s
+			where id = ?::uuid and group_id = ?::uuid and deleted_at is null
+			limit 1
+		`, dao.QualifiedTable("expense_accounts")), next.AccountID, groupID).Scan(&activeAccountID).Error; err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(activeAccountID) == "" {
+			return nil, fmt.Errorf("account not found")
+		}
+	}
+
 	categoryMeta, err := s.findCategoryForUser(ctx, groupID, strings.TrimSpace(next.CategoryID), authUserID)
 	if err != nil {
 		return nil, err
@@ -611,14 +633,17 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 	if err != nil {
 		return nil, err
 	}
-	baseAmount, fxRate, fxRateDate := s.convertToBaseAmount(ctx, next.Amount, next.Currency, baseCurrency, next.OccurredOn)
+	baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(ctx, next.Amount, next.Currency, baseCurrency, next.OccurredOn)
+	if err != nil {
+		return nil, err
+	}
 	next.BaseAmount = baseAmount
 	next.BaseCurrency = baseCurrency
 	next.FxRate = fxRate
 	next.FxRateDate = fxRateDate
 
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Table((dao.ExpenseEntry{}).TableName()).
+		result := tx.Table((dao.ExpenseEntry{}).TableName()).
 			Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", trimmedTransactionID, groupID).
 			Updates(map[string]any{
 				"account_id":    next.AccountID,
@@ -634,8 +659,12 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 				"merchant":      next.Merchant,
 				"note":          next.Note,
 				"updated_at":    next.UpdatedAt,
-			}).Error; err != nil {
-			return err
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("transaction not found")
 		}
 
 		if err := upsertMerchant(tx, merchantFromEntry(groupID, next, now)); err != nil {
@@ -648,6 +677,49 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 	}
 
 	return &next, nil
+}
+
+func (s *ExpenseService) DeleteExpense(ctx context.Context, groupID string, transactionID string) (*dao.ExpenseEntry, error) {
+	trimmedTransactionID := strings.TrimSpace(transactionID)
+	if trimmedTransactionID == "" {
+		return nil, fmt.Errorf("transactionId is required")
+	}
+
+	now := time.Now().UTC()
+	deleted := &dao.ExpenseEntry{}
+	if err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+		update %s
+		set deleted_at = ?, updated_at = ?
+		where id = ?::uuid and group_id = ?::uuid and deleted_at is null
+		returning
+			id::text as id,
+			group_id::text as group_id,
+			account_id::text as account_id,
+			category_id::text as category_id,
+			type,
+			amount,
+			currency,
+			base_amount,
+			base_currency,
+			fx_rate,
+			to_char(fx_rate_date, 'YYYY-MM-DD') as fx_rate_date,
+			to_char(occurred_on, 'YYYY-MM-DD') as occurred_on,
+			merchant,
+			note,
+			metadata,
+			created_by::text as created_by,
+			created_at,
+			updated_at,
+			deleted_at
+	`, dao.QualifiedTable("expense_entries")), now, now, trimmedTransactionID, groupID).Scan(deleted).Error; err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(deleted.ID) == "" {
+		return nil, fmt.Errorf("transaction not found")
+	}
+
+	return deleted, nil
 }
 
 func (s *ExpenseService) ListExpenses(ctx context.Context, groupID string, req *request.ListExpensesRequest) ([]dao.ExpenseEntry, error) {
@@ -994,9 +1066,9 @@ func (s *ExpenseService) convertToBaseAmount(
 	entryCurrency string,
 	baseCurrency string,
 	occurredOn string,
-) (baseAmount int, fxRate float64, fxRateDate string) {
+) (baseAmount int, fxRate float64, fxRateDate string, err error) {
 	if amount <= 0 {
-		return 0, 1.0, occurredOn
+		return 0, 1.0, occurredOn, nil
 	}
 
 	entryCode, err := normalizeCurrencyCode(entryCurrency)
@@ -1014,16 +1086,19 @@ func (s *ExpenseService) convertToBaseAmount(
 	}
 
 	if entryCode == baseCode {
-		return amount, 1.0, normalizedDate
+		return amount, 1.0, normalizedDate, nil
 	}
 
 	if s.FX == nil {
-		return amount, 1.0, normalizedDate
+		return 0, 0, normalizedDate, fmt.Errorf("fx conversion unavailable for %s to %s", entryCode, baseCode)
 	}
 
 	rate, rateDate, err := s.FX.ResolveRate(ctx, entryCode, baseCode, normalizedDate)
-	if err != nil || rate <= 0 {
-		return amount, 1.0, normalizedDate
+	if err != nil {
+		return 0, 0, normalizedDate, fmt.Errorf("resolve fx rate %s to %s: %w", entryCode, baseCode, err)
+	}
+	if rate <= 0 {
+		return 0, 0, normalizedDate, fmt.Errorf("resolve fx rate %s to %s: invalid rate", entryCode, baseCode)
 	}
 
 	converted := int(math.Round(float64(amount) * rate))
@@ -1033,7 +1108,59 @@ func (s *ExpenseService) convertToBaseAmount(
 	if strings.TrimSpace(rateDate) == "" {
 		rateDate = normalizedDate
 	}
-	return converted, rate, rateDate
+	return converted, rate, rateDate, nil
+}
+
+func (s *ExpenseService) prepareSyncedEntryFX(
+	ctx context.Context,
+	entry dao.ExpenseEntry,
+	baseCurrency string,
+) (dao.ExpenseEntry, error) {
+	if entry.DeletedAt != nil {
+		return entry, nil
+	}
+
+	entryCurrency, err := normalizeCurrencyCode(entry.Currency)
+	if err != nil {
+		return entry, err
+	}
+	baseCode, err := normalizeCurrencyCode(baseCurrency)
+	if err != nil {
+		baseCode = "SGD"
+	}
+	entry.Currency = entryCurrency
+
+	storedBaseCode, baseCodeErr := normalizeCurrencyCode(entry.BaseCurrency)
+	_, rateDateErr := normalizeDate(entry.FxRateDate)
+	conversionIsCurrent := baseCodeErr == nil && storedBaseCode == baseCode && rateDateErr == nil && entry.FxRate > 0
+	if entryCurrency == baseCode {
+		conversionIsCurrent = conversionIsCurrent && entry.BaseAmount == entry.Amount && entry.FxRate == 1
+	} else {
+		conversionIsCurrent = conversionIsCurrent &&
+			(entry.Amount == 0 || entry.BaseAmount > 0) &&
+			!(entry.FxRate == 1 && entry.BaseAmount == entry.Amount)
+	}
+
+	if conversionIsCurrent {
+		entry.BaseCurrency = baseCode
+		return entry, nil
+	}
+
+	baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(
+		ctx,
+		entry.Amount,
+		entryCurrency,
+		baseCode,
+		entry.OccurredOn,
+	)
+	if err != nil {
+		return entry, err
+	}
+	entry.BaseAmount = baseAmount
+	entry.BaseCurrency = baseCode
+	entry.FxRate = fxRate
+	entry.FxRateDate = fxRateDate
+	return entry, nil
 }
 
 type categoryMeta struct {

@@ -78,3 +78,20 @@ export async function updateTransactionRemote(params: {
 
 	return payload.data;
 }
+
+export async function deleteTransactionRemote(params: {
+	groupId: string;
+	transactionId: string;
+}): Promise<LedgerEntry> {
+	const response = await authFetch(
+		apiPath(`/api/v1/groups/${params.groupId}/transactions/${params.transactionId}`),
+		{ method: 'DELETE' }
+	);
+
+	const payload = (await response.json()) as ExpensePayload;
+	if (!response.ok || !payload.success || !payload.data) {
+		throw new Error(payload.error || `Delete failed (${response.status})`);
+	}
+
+	return payload.data;
+}

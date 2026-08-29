@@ -63,6 +63,7 @@ type CreateAutomationEntryRequest struct {
 	AccountType string          `json:"accountType"`
 	Merchant    string          `json:"merchant"`
 	Amount      json.RawMessage `json:"amount"`
+	Currency    string          `json:"currency,omitempty"`
 	Device      string          `json:"device,omitempty"`
 }
 

@@ -86,7 +86,15 @@ export async function patchSettings(patch: Partial<AppSettings>): Promise<AppSet
 
 export async function getSettings(): Promise<AppSettings> {
 	const existing = await tx<AppSettings | undefined>('settings', 'readonly', (store) => store.get('settings'));
-	if (existing) return existing;
+	if (existing) {
+		const baseCurrency = existing.baseCurrency?.trim().toUpperCase() || 'SGD';
+		if (existing.baseCurrency !== baseCurrency) {
+			const normalized = { ...existing, baseCurrency };
+			await putRecord('settings', normalized);
+			return normalized;
+		}
+		return existing;
+	}
 
 	const group = createDefaultGroup();
 	const accounts = createDefaultAccounts(group.id);
@@ -95,6 +103,7 @@ export async function getSettings(): Promise<AppSettings> {
 		id: 'settings',
 		activeGroupId: group.id,
 		deviceUserId: makeId(),
+		baseCurrency: 'SGD',
 		lastSyncedAt: null
 	};
 

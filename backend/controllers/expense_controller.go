@@ -401,6 +401,45 @@ func (c *ExpenseController) UpdateExpenseV1(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (c *ExpenseController) DeleteExpenseV1(w http.ResponseWriter, r *http.Request) {
+	groupID := strings.TrimSpace(mux.Vars(r)["groupId"])
+	if groupID == "" {
+		c.writeJSON(w, http.StatusBadRequest, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "groupId is required"},
+		})
+		return
+	}
+
+	transactionID := strings.TrimSpace(mux.Vars(r)["transactionId"])
+	if transactionID == "" {
+		c.writeJSON(w, http.StatusBadRequest, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "transactionId is required"},
+		})
+		return
+	}
+
+	authUserID, _ := r.Context().Value(constants.AuthUserIDCtx).(string)
+	if strings.TrimSpace(authUserID) == "" {
+		c.writeJSON(w, http.StatusUnauthorized, response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: "unauthorized"},
+		})
+		return
+	}
+
+	record, err := c.Service.DeleteExpense(r.Context(), groupID, transactionID)
+	if err != nil {
+		c.writeJSON(w, errorStatus(err), response.ExpenseResponse{
+			BaseResponse: response.BaseResponse{Success: false, Error: err.Error()},
+		})
+		return
+	}
+
+	c.writeJSON(w, http.StatusOK, response.ExpenseResponse{
+		BaseResponse: response.BaseResponse{Success: true},
+		Data:         record,
+	})
+}
+
 func (c *ExpenseController) CreateAdjustmentV1(w http.ResponseWriter, r *http.Request) {
 	groupID := strings.TrimSpace(mux.Vars(r)["groupId"])
 	if groupID == "" {
@@ -468,6 +507,8 @@ func errorStatus(err error) int {
 	message := strings.ToLower(err.Error())
 
 	switch {
+	case strings.Contains(message, "not found"):
+		return http.StatusNotFound
 	case strings.Contains(message, "required"),
 		strings.Contains(message, "must be"),
 		strings.Contains(message, "invalid input syntax for type uuid"),

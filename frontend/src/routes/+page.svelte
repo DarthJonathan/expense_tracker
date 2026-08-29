@@ -1,7 +1,6 @@
 <script lang="ts">
 	import {
 		BarChart3,
-		CalendarDays,
 		ChevronDown,
 		ClipboardList,
 		CreditCard,
@@ -24,9 +23,17 @@
 	import { finance } from '$lib/finance';
 	import { clearSession, generateApiKey, getStoredSession, login, register, type APIKeyData, type AuthSession } from '$lib/auth';
 	import { patchSettings } from '$lib/db';
-	import { searchTransactionsRemote, updateTransactionRemote } from '$lib/transactions';
+	import { deleteTransactionRemote, searchTransactionsRemote, updateTransactionRemote } from '$lib/transactions';
 	import type { CategoryScope, CategoryType, LedgerEntry, PeriodCategoryTotal, PeriodGrain, PeriodSummary } from '$lib/types';
-	import { cents, currency, formatSignedCurrency, isActive, todayInputValue } from '$lib/utils';
+	import {
+		cents,
+		currency as formatCurrency,
+		entryAmountInBaseCurrency,
+		formatSignedCurrency,
+		isActive,
+		normalizeCurrencyCode,
+		todayInputValue
+	} from '$lib/utils';
 
 	type Screen = 'home' | 'review' | 'add' | 'transactions' | 'search' | 'transactionDetail' | 'settings';
 	type DesktopScreen = 'dashboard' | 'transactions' | 'transactionDetail' | 'accounts' | 'review' | 'settings' | 'add';
@@ -35,6 +42,7 @@
 	type BudgetComparisonItem = { id: string; name: string; color: string; spent: number; target: number; fillPercent: number };
 	type FeedbackKind = 'success' | 'error';
 	type SelectOption = { value: string; label: string; disabled?: boolean };
+	type HomeBalancePeriod = 'today' | 'month';
 	type TransactionPeriodMode = 'month' | 'year';
 	type TransactionViewFilter = 'all' | 'household' | 'personal' | 'income' | 'expense';
 
@@ -54,6 +62,7 @@
 	let desktopTransactionDetailOrigin: 'dashboard' | 'transactions' = 'transactions';
 	let desktopSearchOpen = false;
 	let desktopSearchInput: HTMLInputElement | null = null;
+	let homeBalancePeriod: HomeBalancePeriod = 'month';
 	let transactionPeriodMode: TransactionPeriodMode = 'month';
 	let selectedTransactionMonth = todayInputValue().slice(0, 7);
 	let selectedTransactionYear = todayInputValue().slice(0, 4);
@@ -82,14 +91,18 @@
 	let selectedDate: DateValue = parseDate(todayInputValue());
 	let selectedAccountId = '';
 	let selectedCategoryId = '';
+	let selectedCurrency = 'SGD';
 	let transactionEditMode = false;
 	let transactionEditType: 'expense' | 'income' = 'expense';
 	let transactionEditAccountId = '';
 	let transactionEditCategoryId = '';
+	let transactionEditCurrency = 'SGD';
 	let transactionEditAmount = '';
 	let transactionEditDate = todayInputValue();
 	let transactionEditMerchant = '';
 	let transactionEditNote = '';
+	let transactionDeleteConfirmOpen = false;
+	let transactionDeleting = false;
 	let isOnline = true;
 	let merchantQuery = '';
 	let merchantSuggestions: string[] = [];
@@ -172,8 +185,27 @@
 		{ value: 'income', label: 'Income' },
 		{ value: 'expense', label: 'Expense' }
 	];
+	const currencyOptions: SelectOption[] = [
+		'SGD',
+		'USD',
+		'EUR',
+		'GBP',
+		'JPY',
+		'AUD',
+		'CAD',
+		'CHF',
+		'CNY',
+		'HKD',
+		'IDR',
+		'MYR',
+		'THB',
+		'PHP',
+		'KRW',
+		'NZD'
+	].map((value) => ({ value, label: value }));
 
 	$: state = $finance;
+	$: baseCurrency = normalizeCurrencyCode(state?.settings.baseCurrency ?? 'SGD');
 	$: activeGroup = state?.groups.find((group) => group.id === state.settings.activeGroupId);
 	$: allAccounts =
 		state?.accounts
@@ -276,26 +308,38 @@
 		[];
 	$: merchants = state?.merchants.filter((merchant) => merchant.groupId === state.settings.activeGroupId && isActive(merchant)) ?? [];
 	$: categoryById = new Map(allCategories.map((category) => [category.id, category]));
-	$: summaries = buildPeriodSummaries(accounts, allCategories, entries, adjustments, grain);
+	$: summaries = buildPeriodSummaries(accounts, allCategories, entries, adjustments, grain, baseCurrency);
 	$: currentSummary = summaries[0];
 	$: householdEntries = entries.filter((entry) => {
 		const category = categoryById.get(entry.categoryId);
 		return normalizeCategoryScope(category?.scope) === 'household';
 	});
-	$: currentBalance = getCurrentBalance(accounts, householdEntries);
+	$: currentBalance = getCurrentBalance(accounts, householdEntries, baseCurrency);
 	$: currentMonthKey = todayInputValue().slice(0, 7);
 	$: currentMonthEntries = entries.filter((entry) => entry.occurredOn.startsWith(currentMonthKey));
-	$: currentMonthIncomeEntries = currentMonthEntries.filter((entry) => entry.type === 'income');
-	$: currentMonthExpenseEntries = currentMonthEntries.filter((entry) => entry.type === 'expense');
-	$: currentMonthIncome = currentMonthIncomeEntries.reduce((sum, entry) => sum + entry.amount, 0);
-	$: currentMonthSpent = currentMonthExpenseEntries.reduce((sum, entry) => sum + entry.amount, 0);
+	$: homeBalancePeriodLabel = homeBalancePeriod === 'today' ? 'Today' : 'This month';
+	$: homeBalanceEntries =
+		homeBalancePeriod === 'today'
+			? entries.filter((entry) => entry.occurredOn === todayInputValue())
+			: currentMonthEntries;
+	$: homeIncomeEntries = homeBalanceEntries.filter((entry) => entry.type === 'income');
+	$: homeExpenseEntries = homeBalanceEntries.filter((entry) => entry.type === 'expense');
+	$: homeIncome = homeIncomeEntries.reduce((sum, entry) => sum + entryAmountInBaseCurrency(entry, baseCurrency), 0);
+	$: homeSpent = homeExpenseEntries.reduce((sum, entry) => sum + entryAmountInBaseCurrency(entry, baseCurrency), 0);
 	$: currentMonthCategoryAmounts = currentMonthEntries.reduce((totals, entry) => {
-		totals.set(entry.categoryId, (totals.get(entry.categoryId) ?? 0) + entry.amount);
+		totals.set(entry.categoryId, (totals.get(entry.categoryId) ?? 0) + entryAmountInBaseCurrency(entry, baseCurrency));
 		return totals;
 	}, new Map<string, number>());
-	$: currentMonthHouseholdEntries = householdEntries.filter((entry) => entry.occurredOn.startsWith(currentMonthKey));
-	$: currentMonthHouseholdBalance = currentMonthHouseholdEntries.reduce(
-		(sum, entry) => sum + (entry.type === 'income' ? entry.amount : -entry.amount),
+	$: homeHouseholdEntries = homeBalanceEntries.filter((entry) => {
+		const category = categoryById.get(entry.categoryId);
+		return normalizeCategoryScope(category?.scope) === 'household';
+	});
+	$: homeHouseholdBalance = homeHouseholdEntries.reduce(
+		(sum, entry) =>
+			sum +
+			(entry.type === 'income'
+				? entryAmountInBaseCurrency(entry, baseCurrency)
+				: -entryAmountInBaseCurrency(entry, baseCurrency)),
 		0
 	);
 	$: personalEntries = entries.filter((entry) => {
@@ -306,14 +350,16 @@
 		}
 		return false;
 	});
-	$: currentMonthPersonalEntries = personalEntries.filter((entry) => entry.occurredOn.startsWith(currentMonthKey));
-	$: personalIncome = currentMonthPersonalEntries
+	$: homePersonalEntries = personalEntries.filter((entry) =>
+		homeBalancePeriod === 'today' ? entry.occurredOn === todayInputValue() : entry.occurredOn.startsWith(currentMonthKey)
+	);
+	$: homePersonalIncome = homePersonalEntries
 		.filter((entry) => entry.type === 'income')
-		.reduce((sum, entry) => sum + entry.amount, 0);
-	$: personalSpent = currentMonthPersonalEntries
+		.reduce((sum, entry) => sum + entryAmountInBaseCurrency(entry, baseCurrency), 0);
+	$: homePersonalSpent = homePersonalEntries
 		.filter((entry) => entry.type === 'expense')
-		.reduce((sum, entry) => sum + entry.amount, 0);
-	$: personalBalance = personalIncome - personalSpent;
+		.reduce((sum, entry) => sum + entryAmountInBaseCurrency(entry, baseCurrency), 0);
+	$: homePersonalBalance = homePersonalIncome - homePersonalSpent;
 	$: recentEntries = [...entries].sort((a, b) => b.occurredOn.localeCompare(a.occurredOn)).slice(0, 5);
 	$: allTransactions = [...entries].sort((a, b) => `${b.occurredOn}${b.createdAt}`.localeCompare(`${a.occurredOn}${a.createdAt}`));
 	$: transactionMonthOptions = buildTransactionMonthOptions(allTransactions);
@@ -595,6 +641,7 @@
 			form.reset();
 			selectedDate = parseDate(todayInputValue());
 			selectedEntryType = 'expense';
+			selectedCurrency = 'SGD';
 			merchantQuery = '';
 			merchantSuggestions = [];
 			showMerchantSuggestions = false;
@@ -706,16 +753,19 @@
 		if (!tokens.length) return 0;
 
 		const normalizedAmount = normalizeMerchantText(String(entry.amount));
-		const formattedAmount = normalizeMerchantText(currency(entry.amount));
+		const formattedAmount = normalizeMerchantText(transactionAmount(entry));
+		const formattedBaseAmount = normalizeMerchantText(transactionBaseAmount(entry));
 		const fields = [
 			normalizeMerchantText(entry.merchant),
 			normalizeMerchantText(entry.note ?? ''),
 			normalizeMerchantText(entry.occurredOn),
 			normalizeMerchantText(entry.type),
+			normalizeMerchantText(entry.currency),
 			normalizeMerchantText(accountName(entry.accountId)),
 			normalizeMerchantText(categoryName(entry.categoryId)),
 			normalizedAmount,
-			formattedAmount
+			formattedAmount,
+			formattedBaseAmount
 		].filter(Boolean);
 
 		let score = 0;
@@ -878,6 +928,7 @@
 		selectedTransactionId = entryId;
 		selectedTransactionFallback = fallback ?? null;
 		transactionEditMode = false;
+		transactionDeleteConfirmOpen = false;
 		activeScreen = 'transactionDetail';
 	}
 
@@ -889,21 +940,25 @@
 		selectedTransactionId = entryId;
 		selectedTransactionFallback = fallback ?? null;
 		transactionEditMode = false;
+		transactionDeleteConfirmOpen = false;
 		desktopTransactionDetailOrigin = origin;
 		desktopScreen = 'transactionDetail';
 	}
 
 	function closeDesktopTransactionDetail(): void {
 		transactionEditMode = false;
+		transactionDeleteConfirmOpen = false;
 		desktopScreen = desktopTransactionDetailOrigin;
 	}
 
 	function openTransactionEditor(): void {
 		if (!selectedTransaction) return;
+		transactionDeleteConfirmOpen = false;
 		transactionEditMode = true;
 		transactionEditType = selectedTransaction.type;
 		transactionEditAccountId = selectedTransaction.accountId;
 		transactionEditCategoryId = selectedTransaction.categoryId;
+		transactionEditCurrency = normalizeCurrencyCode(selectedTransaction.currency);
 		transactionEditAmount = amountFromCents(selectedTransaction.amount);
 		transactionEditDate = selectedTransaction.occurredOn;
 		transactionEditMerchant = selectedTransaction.merchant;
@@ -914,11 +969,74 @@
 		transactionEditMode = false;
 	}
 
+	async function deleteSelectedTransaction(): Promise<void> {
+		if (!selectedTransaction || transactionDeleting) return;
+		const transactionId = selectedTransaction.id;
+		const groupId = state?.settings.activeGroupId ?? '';
+		let deletedLocally = false;
+		transactionDeleting = true;
+
+		try {
+			await finance.deleteEntry(transactionId);
+			deletedLocally = true;
+			selectedTransactionId = '';
+			selectedTransactionFallback = null;
+			transactionDeleteConfirmOpen = false;
+			if (activeScreen === 'transactionDetail') activeScreen = 'transactions';
+			if (desktopScreen === 'transactionDetail') closeDesktopTransactionDetail();
+
+			if (navigator.onLine && authSession && groupId) {
+				const serverEntry = await deleteTransactionRemote({
+					groupId,
+					transactionId
+				});
+				await finance.acceptServerEntry(serverEntry);
+			}
+
+			let synced = false;
+			if (navigator.onLine) {
+				synced = await finance.syncNow();
+			}
+
+			if (!navigator.onLine) {
+				showFeedback('success', 'Deleted', 'Transaction deleted locally. The change will sync when online.');
+				return;
+			}
+			if (!synced) {
+				showFeedback('error', 'Deleted locally', 'Transaction was removed locally, but backend sync failed.');
+				return;
+			}
+			showFeedback('success', 'Deleted', 'Transaction deleted successfully.');
+		} catch (error) {
+			showFeedback(
+				'error',
+				deletedLocally ? 'Deleted locally' : 'Delete failed',
+				deletedLocally
+					? 'Transaction was removed locally, but backend sync failed. It will retry on the next sync.'
+					: error instanceof Error
+						? error.message
+						: 'Unable to delete transaction.'
+			);
+		} finally {
+			transactionDeleting = false;
+		}
+	}
+
 	async function submitTransactionUpdate(event: SubmitEvent): Promise<void> {
 		if (!selectedTransaction) return;
 		const form = event.currentTarget as HTMLFormElement;
 		const formData = new FormData(form);
-		formData.set('currency', 'SGD');
+		const accountId = transactionEditAccountId.trim();
+		const categoryId = transactionEditCategoryId.trim();
+		const type = transactionEditType;
+		const currencyCode = normalizeCurrencyCode(transactionEditCurrency);
+
+		// AppSelect is a custom control. Serialize its bound values explicitly so
+		// local persistence and the remote update always receive the new selection.
+		formData.set('accountId', accountId);
+		formData.set('categoryId', categoryId);
+		formData.set('type', type);
+		formData.set('currency', currencyCode);
 		try {
 			await finance.updateEntry(selectedTransaction.id, formData);
 			transactionEditMode = false;
@@ -926,13 +1044,11 @@
 				const serverEntry = await updateTransactionRemote({
 					groupId: state.settings.activeGroupId,
 					transactionId: selectedTransaction.id,
-					accountId: `${formData.get('accountId') ?? ''}`.trim(),
-					categoryId: `${formData.get('categoryId') ?? ''}`.trim(),
-					type: (`${formData.get('type') ?? 'expense'}`.trim().toLowerCase() === 'income' ? 'income' : 'expense') as
-						| 'expense'
-						| 'income',
+					accountId,
+					categoryId,
+					type,
 					amount: cents(formData.get('amount')),
-					currency: 'SGD',
+					currency: currencyCode,
 					occurredOn: `${formData.get('occurredOn') ?? todayInputValue()}`.trim(),
 					merchant: `${formData.get('merchant') ?? ''}`.trim(),
 					note: `${formData.get('note') ?? ''}`.trim()
@@ -1030,6 +1146,19 @@
 		return new Intl.DateTimeFormat(undefined, { day: '2-digit', month: 'short' }).format(new Date(`${value}T00:00:00`));
 	}
 
+	function currency(amountInCents: number, currencyCode = baseCurrency): string {
+		return formatCurrency(amountInCents, currencyCode);
+	}
+
+	function transactionAmount(entry: LedgerEntry): string {
+		return currency(entry.amount, normalizeCurrencyCode(entry.currency));
+	}
+
+	function transactionBaseAmount(entry: LedgerEntry): string {
+		const amount = entryAmountInBaseCurrency(entry, baseCurrency);
+		return amount > 0 || entry.amount === 0 ? currency(amount, baseCurrency) : 'Pending FX conversion';
+	}
+
 	function amountFromCents(value: number): string {
 		return (Math.max(0, value) / 100).toFixed(2);
 	}
@@ -1044,7 +1173,14 @@
 	function accountMonthlyBalance(accountId: string): number {
 		return entries
 			.filter((entry) => entry.accountId === accountId && entry.occurredOn.startsWith(currentMonthKey))
-			.reduce((sum, entry) => sum + (entry.type === 'income' ? entry.amount : -entry.amount), 0);
+			.reduce(
+				(sum, entry) =>
+					sum +
+					(entry.type === 'income'
+						? entryAmountInBaseCurrency(entry, baseCurrency)
+						: -entryAmountInBaseCurrency(entry, baseCurrency)),
+				0
+			);
 	}
 
 	function buildStatItems(items: PeriodCategoryTotal[], entryType: CategoryType): StatItem[] {
@@ -1237,7 +1373,9 @@ function getEntryCategoryOptions(
 		return allEntries
 			.filter((entry) => entry.type === entryType && periodKey(entry.occurredOn, periodGrain) === activePeriodKey)
 			.sort((a, b) => {
-				if (b.amount !== a.amount) return b.amount - a.amount;
+				const amountDifference =
+					entryAmountInBaseCurrency(b, baseCurrency) - entryAmountInBaseCurrency(a, baseCurrency);
+				if (amountDifference !== 0) return amountDifference;
 				return `${b.occurredOn}${b.createdAt}`.localeCompare(`${a.occurredOn}${a.createdAt}`);
 			})
 			.slice(0, 5);
@@ -1566,26 +1704,45 @@ function getEntryCategoryOptions(
 				</div>
 			</header>
 
+			<div class="home-period-toggle" role="group" aria-label="Home balance period">
+				<button
+					type="button"
+					class:active={homeBalancePeriod === 'today'}
+					aria-pressed={homeBalancePeriod === 'today'}
+					on:click={() => (homeBalancePeriod = 'today')}
+				>
+					Today
+				</button>
+				<button
+					type="button"
+					class:active={homeBalancePeriod === 'month'}
+					aria-pressed={homeBalancePeriod === 'month'}
+					on:click={() => (homeBalancePeriod = 'month')}
+				>
+					This month
+				</button>
+			</div>
+
 			<button class="balance-card" type="button" on:click={() => (activeScreen = 'add')}>
 				<span>Household balance</span>
-				<strong>{currency(currentMonthHouseholdBalance)}</strong>
-				<small>This month · {currentMonthHouseholdEntries.length} transaction{currentMonthHouseholdEntries.length === 1 ? '' : 's'}</small>
+				<strong>{currency(homeHouseholdBalance)}</strong>
+				<small>{homeBalancePeriodLabel} · {homeHouseholdEntries.length} transaction{homeHouseholdEntries.length === 1 ? '' : 's'}</small>
 			</button>
 
 			<article class="balance-card personal-balance-card">
 				<span>Personal balance</span>
-				<strong>{currency(personalBalance)}</strong>
-				<small>This month · {currentMonthPersonalEntries.length} transaction{currentMonthPersonalEntries.length === 1 ? '' : 's'}</small>
+				<strong>{currency(homePersonalBalance)}</strong>
+				<small>{homeBalancePeriodLabel} · {homePersonalEntries.length} transaction{homePersonalEntries.length === 1 ? '' : 's'}</small>
 			</article>
 
 			<div class="home-stat-grid">
 				<article>
 					<span>Income</span>
-					<strong>{currency(currentMonthIncome)}</strong>
+					<strong>{currency(homeIncome)}</strong>
 				</article>
 				<article>
 					<span>Spending</span>
-					<strong>{currency(currentMonthSpent)}</strong>
+					<strong>{currency(homeSpent)}</strong>
 				</article>
 				<article>
 					<span>Ending balance</span>
@@ -1597,11 +1754,11 @@ function getEntryCategoryOptions(
 				</article>
 				<article>
 					<span>Personal income</span>
-					<strong>{currency(personalIncome)}</strong>
+					<strong>{currency(homePersonalIncome)}</strong>
 				</article>
 				<article>
 					<span>Personal expense</span>
-					<strong>{currency(personalSpent)}</strong>
+					<strong>{currency(homePersonalSpent)}</strong>
 				</article>
 			</div>
 
@@ -1668,7 +1825,7 @@ function getEntryCategoryOptions(
 							<p>{formatDate(entry.occurredOn)} · {accountName(entry.accountId)}</p>
 						</div>
 						<strong class:negative={entry.type === 'expense'}>
-							{entry.type === 'expense' ? '-' : '+'}{currency(entry.amount)}
+							{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}
 						</strong>
 					</article>
 				{:else}
@@ -1753,7 +1910,7 @@ function getEntryCategoryOptions(
 								<p>{formatDate(entry.occurredOn)} · {accountName(entry.accountId)}</p>
 							</div>
 							<strong class:negative={entry.type === 'expense'}>
-								{entry.type === 'expense' ? '-' : '+'}{currency(entry.amount)}
+								{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}
 							</strong>
 						</article>
 					{:else}
@@ -1780,10 +1937,16 @@ function getEntryCategoryOptions(
 						</Tabs.List>
 					</Tabs.Root>
 					<input name="type" type="hidden" value={selectedEntryType} />
-				<label>
-					Amount
-					<input name="amount" type="text" inputmode="decimal" placeholder="0.00" on:input={formatAmountInput} required />
-				</label>
+				<div class="field-grid">
+					<label>
+						Amount
+						<input name="amount" type="text" inputmode="decimal" placeholder="0.00" on:input={formatAmountInput} required />
+					</label>
+					<label>
+						Currency
+						<AppSelect ariaLabel="Transaction currency" bind:value={selectedCurrency} name="currency" options={currencyOptions} required />
+					</label>
+				</div>
 				<label class="merchant-field">
 					Merchant or source
 					<input
@@ -1941,7 +2104,7 @@ function getEntryCategoryOptions(
 					{#each mobileTransactions as entry}
 						<button
 							type="button"
-							aria-label={`Open transaction ${entry.merchant} ${currency(entry.amount)}`}
+							aria-label={`Open transaction ${entry.merchant} ${transactionAmount(entry)}`}
 							on:click={() => openTransactionDetail(entry.id)}
 						>
 							<time>{formatDate(entry.occurredOn)}</time>
@@ -1951,7 +2114,7 @@ function getEntryCategoryOptions(
 							</div>
 							<span>{categoryName(entry.categoryId)}</span>
 							<b class:negative={entry.type === 'expense'}>
-								{entry.type === 'expense' ? '-' : '+'}{currency(entry.amount)}
+								{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}
 							</b>
 						</button>
 					{:else}
@@ -1986,7 +2149,7 @@ function getEntryCategoryOptions(
 					{#each searchPageResults as entry}
 						<button
 							type="button"
-							aria-label={`Open transaction ${entry.merchant} ${currency(entry.amount)}`}
+							aria-label={`Open transaction ${entry.merchant} ${transactionAmount(entry)}`}
 							on:click={() => openTransactionDetail(entry.id, entry)}
 						>
 							<div>
@@ -1994,7 +2157,7 @@ function getEntryCategoryOptions(
 								<small>{formatDate(entry.occurredOn)} · {categoryName(entry.categoryId)} · {accountName(entry.accountId)}</small>
 							</div>
 							<b class:negative={entry.type === 'expense'}>
-								{entry.type === 'expense' ? '-' : '+'}{currency(entry.amount)}
+								{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}
 							</b>
 						</button>
 					{:else}
@@ -2027,6 +2190,16 @@ function getEntryCategoryOptions(
 								<input bind:value={transactionEditAmount} name="amount" type="text" inputmode="decimal" on:input={formatAmountInput} required />
 							</label>
 						</div>
+						<label>
+							Currency
+							<AppSelect
+								ariaLabel="Transaction currency"
+								bind:value={transactionEditCurrency}
+								name="currency"
+								options={currencyOptions}
+								required
+							/>
+						</label>
 						<label>
 							Merchant
 							<input bind:value={transactionEditMerchant} name="merchant" required />
@@ -2065,7 +2238,6 @@ function getEntryCategoryOptions(
 								<input bind:value={transactionEditNote} name="note" placeholder="Optional" />
 							</label>
 						</div>
-						<input name="currency" type="hidden" value="SGD" />
 						<div class="button-row">
 							<button type="submit">Save changes</button>
 							<button class="ghost" type="button" on:click={closeTransactionEditor}>Cancel</button>
@@ -2084,13 +2256,27 @@ function getEntryCategoryOptions(
 						<div class="transaction-detail-row">
 							<span>Amount</span>
 							<strong class:negative={selectedTransaction.type === 'expense'}>
-								{selectedTransaction.type === 'expense' ? '-' : '+'}{currency(selectedTransaction.amount)}
+								{selectedTransaction.type === 'expense' ? '-' : '+'}{transactionAmount(selectedTransaction)}
 							</strong>
 						</div>
 						<div class="transaction-detail-row">
 							<span>Currency</span>
-							<strong>SGD</strong>
+							<strong>{normalizeCurrencyCode(selectedTransaction.currency)}</strong>
 						</div>
+						{#if normalizeCurrencyCode(selectedTransaction.currency) !== baseCurrency}
+							<div class="transaction-detail-row">
+								<span>In {baseCurrency}</span>
+								<strong>{transactionBaseAmount(selectedTransaction)}</strong>
+							</div>
+							<div class="transaction-detail-row">
+								<span>FX rate</span>
+								<strong>{selectedTransaction.fxRate > 0 ? selectedTransaction.fxRate.toFixed(6) : 'Pending'}</strong>
+							</div>
+							<div class="transaction-detail-row">
+								<span>FX date</span>
+								<strong>{selectedTransaction.fxRateDate ? formatDate(selectedTransaction.fxRateDate) : 'Pending'}</strong>
+							</div>
+						{/if}
 						<div class="transaction-detail-row">
 							<span>Date</span>
 							<strong>{formatDate(selectedTransaction.occurredOn)}</strong>
@@ -2108,7 +2294,18 @@ function getEntryCategoryOptions(
 							<strong>{selectedTransaction.note || '-'}</strong>
 						</div>
 						<div class="button-row transaction-detail-actions">
-							<button type="button" on:click={openTransactionEditor}>Edit transaction</button>
+							{#if transactionDeleteConfirmOpen}
+								<p class="transaction-delete-confirmation">Delete this transaction? This cannot be undone.</p>
+								<button class="danger" type="button" disabled={transactionDeleting} on:click={deleteSelectedTransaction}>
+									{transactionDeleting ? 'Deleting...' : 'Confirm delete'}
+								</button>
+								<button class="ghost" type="button" disabled={transactionDeleting} on:click={() => (transactionDeleteConfirmOpen = false)}>
+									Cancel
+								</button>
+							{:else}
+								<button type="button" on:click={openTransactionEditor}>Edit transaction</button>
+								<button class="danger" type="button" on:click={() => (transactionDeleteConfirmOpen = true)}>Delete transaction</button>
+							{/if}
 						</div>
 					</section>
 				{/if}
@@ -2254,7 +2451,7 @@ function getEntryCategoryOptions(
 									name="openingBalance"
 									type="text"
 									inputmode="decimal"
-									value={currency(selectedSettingsAccount.openingBalance).replace('$', '')}
+									value={amountFromCents(selectedSettingsAccount.openingBalance)}
 									placeholder="Opening"
 									on:input={formatAmountInput}
 								/>
@@ -2342,7 +2539,7 @@ function getEntryCategoryOptions(
 									name="monthlyTarget"
 									type="text"
 									inputmode="decimal"
-									value={currency(selectedSettingsCategory.monthlyTarget).replace('$', '')}
+									value={amountFromCents(selectedSettingsCategory.monthlyTarget)}
 									placeholder="Monthly target"
 									on:input={formatAmountInput}
 								/>
@@ -2597,30 +2794,47 @@ function getEntryCategoryOptions(
 
 			{#if desktopScreen === 'dashboard'}
 			<div class="desktop-filter-row">
-				<button type="button"><CalendarDays size={17} /> This month</button>
+				<div class="home-period-toggle desktop-home-period-toggle" role="group" aria-label="Home balance period">
+					<button
+						type="button"
+						class:active={homeBalancePeriod === 'today'}
+						aria-pressed={homeBalancePeriod === 'today'}
+						on:click={() => (homeBalancePeriod = 'today')}
+					>
+						Today
+					</button>
+					<button
+						type="button"
+						class:active={homeBalancePeriod === 'month'}
+						aria-pressed={homeBalancePeriod === 'month'}
+						on:click={() => (homeBalancePeriod = 'month')}
+					>
+						This month
+					</button>
+				</div>
 				<button type="button" on:click={() => (desktopScreen = 'settings')}><Settings size={17} /> Manage widgets</button>
 			</div>
 
 		<section class="desktop-kpis">
 			<button type="button" on:click={() => openDesktopTransactions('household')}>
 				<span>Household balance</span>
-				<strong>{currency(currentMonthHouseholdBalance)}</strong>
-				<small>This month · {currentMonthHouseholdEntries.length} transaction{currentMonthHouseholdEntries.length === 1 ? '' : 's'}</small>
+				<strong>{currency(homeHouseholdBalance)}</strong>
+				<small>{homeBalancePeriodLabel} · {homeHouseholdEntries.length} transaction{homeHouseholdEntries.length === 1 ? '' : 's'}</small>
 			</button>
 			<button type="button" on:click={() => openDesktopTransactions('personal')}>
 				<span>Personal balance</span>
-				<strong>{currency(personalBalance)}</strong>
-				<small>This month · {currentMonthPersonalEntries.length} personal transaction{currentMonthPersonalEntries.length === 1 ? '' : 's'}</small>
+				<strong>{currency(homePersonalBalance)}</strong>
+				<small>{homeBalancePeriodLabel} · {homePersonalEntries.length} personal transaction{homePersonalEntries.length === 1 ? '' : 's'}</small>
 			</button>
 			<button type="button" on:click={() => openDesktopTransactions('income')}>
 				<span>Income</span>
-				<strong>{currency(currentMonthIncome)}</strong>
-				<small>This month · {currentMonthIncomeEntries.length} transaction{currentMonthIncomeEntries.length === 1 ? '' : 's'}</small>
+				<strong>{currency(homeIncome)}</strong>
+				<small>{homeBalancePeriodLabel} · {homeIncomeEntries.length} transaction{homeIncomeEntries.length === 1 ? '' : 's'}</small>
 			</button>
 			<button type="button" on:click={() => openDesktopTransactions('expense')}>
 				<span>Expense</span>
-				<strong>{currency(currentMonthSpent)}</strong>
-				<small>This month · {currentMonthExpenseEntries.length} transaction{currentMonthExpenseEntries.length === 1 ? '' : 's'}</small>
+				<strong>{currency(homeSpent)}</strong>
+				<small>{homeBalancePeriodLabel} · {homeExpenseEntries.length} transaction{homeExpenseEntries.length === 1 ? '' : 's'}</small>
 			</button>
 		</section>
 
@@ -2845,14 +3059,14 @@ function getEntryCategoryOptions(
 					<button
 						class="desktop-transaction-row"
 						type="button"
-						aria-label={`Open transaction ${entry.merchant} ${currency(entry.amount)}`}
+						aria-label={`Open transaction ${entry.merchant} ${transactionAmount(entry)}`}
 						on:click={() => openDesktopTransactionDetail(entry.id, 'dashboard')}
 					>
 						<time>{formatDate(entry.occurredOn)}</time>
 						<strong>{entry.merchant}</strong>
 						<span>{categoryName(entry.categoryId)}</span>
 						<span>{accountName(entry.accountId)}</span>
-						<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{currency(entry.amount)}</b>
+						<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}</b>
 					</button>
 				{:else}
 					<p class="muted">{transactionSearchQueryNormalized ? 'No matching transactions.' : 'No transactions yet.'}</p>
@@ -2923,14 +3137,14 @@ function getEntryCategoryOptions(
 							<button
 								class="desktop-transaction-row"
 								type="button"
-								aria-label={`Open transaction ${entry.merchant} ${currency(entry.amount)}`}
+								aria-label={`Open transaction ${entry.merchant} ${transactionAmount(entry)}`}
 								on:click={() => openDesktopTransactionDetail(entry.id, 'transactions')}
 							>
 								<time>{formatDate(entry.occurredOn)}</time>
 								<strong>{entry.merchant}</strong>
 								<span>{categoryName(entry.categoryId)}</span>
 								<span>{accountName(entry.accountId)}</span>
-								<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{currency(entry.amount)}</b>
+								<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}</b>
 							</button>
 						{:else}
 							<p class="muted">
@@ -2971,6 +3185,16 @@ function getEntryCategoryOptions(
 									</label>
 								</div>
 								<label>
+									Currency
+									<AppSelect
+										ariaLabel="Transaction currency"
+										bind:value={transactionEditCurrency}
+										name="currency"
+										options={currencyOptions}
+										required
+									/>
+								</label>
+								<label>
 									Merchant
 									<input bind:value={transactionEditMerchant} name="merchant" required />
 								</label>
@@ -3008,7 +3232,6 @@ function getEntryCategoryOptions(
 										<input bind:value={transactionEditNote} name="note" placeholder="Optional" />
 									</label>
 								</div>
-								<input name="currency" type="hidden" value="SGD" />
 								<div class="button-row">
 									<button type="submit">Save changes</button>
 									<button class="ghost" type="button" on:click={closeTransactionEditor}>Cancel</button>
@@ -3027,13 +3250,27 @@ function getEntryCategoryOptions(
 								<div class="transaction-detail-row">
 									<span>Amount</span>
 									<strong class:negative={selectedTransaction.type === 'expense'}>
-										{selectedTransaction.type === 'expense' ? '-' : '+'}{currency(selectedTransaction.amount)}
+										{selectedTransaction.type === 'expense' ? '-' : '+'}{transactionAmount(selectedTransaction)}
 									</strong>
 								</div>
 								<div class="transaction-detail-row">
 									<span>Currency</span>
-									<strong>SGD</strong>
+									<strong>{normalizeCurrencyCode(selectedTransaction.currency)}</strong>
 								</div>
+								{#if normalizeCurrencyCode(selectedTransaction.currency) !== baseCurrency}
+									<div class="transaction-detail-row">
+										<span>In {baseCurrency}</span>
+										<strong>{transactionBaseAmount(selectedTransaction)}</strong>
+									</div>
+									<div class="transaction-detail-row">
+										<span>FX rate</span>
+										<strong>{selectedTransaction.fxRate > 0 ? selectedTransaction.fxRate.toFixed(6) : 'Pending'}</strong>
+									</div>
+									<div class="transaction-detail-row">
+										<span>FX date</span>
+										<strong>{selectedTransaction.fxRateDate ? formatDate(selectedTransaction.fxRateDate) : 'Pending'}</strong>
+									</div>
+								{/if}
 								<div class="transaction-detail-row">
 									<span>Date</span>
 									<strong>{formatDate(selectedTransaction.occurredOn)}</strong>
@@ -3051,7 +3288,25 @@ function getEntryCategoryOptions(
 									<strong>{selectedTransaction.note || '-'}</strong>
 								</div>
 								<div class="button-row transaction-detail-actions">
-									<button type="button" on:click={openTransactionEditor}>Edit transaction</button>
+									{#if transactionDeleteConfirmOpen}
+										<p class="transaction-delete-confirmation">Delete this transaction? This cannot be undone.</p>
+										<button class="danger" type="button" disabled={transactionDeleting} on:click={deleteSelectedTransaction}>
+											{transactionDeleting ? 'Deleting...' : 'Confirm delete'}
+										</button>
+										<button
+											class="ghost"
+											type="button"
+											disabled={transactionDeleting}
+											on:click={() => (transactionDeleteConfirmOpen = false)}
+										>
+											Cancel
+										</button>
+									{:else}
+										<button type="button" on:click={openTransactionEditor}>Edit transaction</button>
+										<button class="danger" type="button" on:click={() => (transactionDeleteConfirmOpen = true)}>
+											Delete transaction
+										</button>
+									{/if}
 								</div>
 							</section>
 						{/if}
@@ -3115,7 +3370,7 @@ function getEntryCategoryOptions(
 															name="openingBalance"
 															type="text"
 															inputmode="decimal"
-															value={currency(account.openingBalance).replace('$', '')}
+													value={amountFromCents(account.openingBalance)}
 															placeholder="Opening"
 															on:input={formatAmountInput}
 														/>
@@ -3224,7 +3479,7 @@ function getEntryCategoryOptions(
 															name="monthlyTarget"
 															type="text"
 															inputmode="decimal"
-															value={currency(category.monthlyTarget).replace('$', '')}
+													value={amountFromCents(category.monthlyTarget)}
 															placeholder="Monthly target"
 															on:input={formatAmountInput}
 														/>
@@ -3313,7 +3568,7 @@ function getEntryCategoryOptions(
 										<strong>{readablePeriod(summary.periodKey, grain)}</strong>
 										<small>Ending {currency(summary.endingBalance)}</small>
 									</div>
-									<b>{formatSignedCurrency(summary.netCashFlow)}</b>
+									<b>{formatSignedCurrency(summary.netCashFlow, baseCurrency)}</b>
 								</article>
 							{:else}
 								<p class="muted">No periods yet.</p>
@@ -3337,10 +3592,22 @@ function getEntryCategoryOptions(
 							</Tabs.List>
 						</Tabs.Root>
 						<input name="type" type="hidden" value={selectedEntryType} />
-						<label>
-							Amount
-							<input name="amount" type="text" inputmode="decimal" placeholder="0.00" on:input={formatAmountInput} required />
-						</label>
+						<div class="field-grid">
+							<label>
+								Amount
+								<input name="amount" type="text" inputmode="decimal" placeholder="0.00" on:input={formatAmountInput} required />
+							</label>
+							<label>
+								Currency
+								<AppSelect
+									ariaLabel="Transaction currency"
+									bind:value={selectedCurrency}
+									name="currency"
+									options={currencyOptions}
+									required
+								/>
+							</label>
+						</div>
 						<label class="merchant-field">
 							Merchant or source
 							<input
