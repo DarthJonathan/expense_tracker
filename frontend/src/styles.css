@@ -1781,6 +1781,24 @@ body {
 	color: #9c332b;
 }
 
+.transaction-amount-cell {
+	display: grid;
+	justify-items: end;
+	justify-self: end;
+	min-width: 0;
+	text-align: right;
+}
+
+.transaction-amount-cell .transaction-base-amount {
+	color: var(--muted);
+	font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+	font-size: 0.72rem;
+	font-weight: 800;
+	line-height: 1.25;
+	margin-top: 0.2rem;
+	white-space: nowrap;
+}
+
 .transaction-detail-card {
 	background: var(--panel);
 	border: 1px solid var(--line);

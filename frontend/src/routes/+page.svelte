@@ -1159,6 +1159,16 @@
 		return amount > 0 || entry.amount === 0 ? currency(amount, baseCurrency) : 'Pending FX conversion';
 	}
 
+	function isForeignTransaction(entry: LedgerEntry): boolean {
+		return normalizeCurrencyCode(entry.currency) !== baseCurrency;
+	}
+
+	function transactionBaseListAmount(entry: LedgerEntry): string {
+		const amount = entryAmountInBaseCurrency(entry, baseCurrency);
+		if (amount <= 0 && entry.amount !== 0) return 'FX pending';
+		return `≈ ${entry.type === 'expense' ? '-' : '+'}${currency(amount, baseCurrency)}`;
+	}
+
 	function amountFromCents(value: number): string {
 		return (Math.max(0, value) / 100).toFixed(2);
 	}
@@ -2113,9 +2123,14 @@ function getEntryCategoryOptions(
 								<small>{accountName(entry.accountId)}</small>
 							</div>
 							<span>{categoryName(entry.categoryId)}</span>
-							<b class:negative={entry.type === 'expense'}>
-								{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}
-							</b>
+							<div class="transaction-amount-cell">
+								<b class:negative={entry.type === 'expense'}>
+									{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}
+								</b>
+								{#if isForeignTransaction(entry)}
+									<small class="transaction-base-amount">{transactionBaseListAmount(entry)}</small>
+								{/if}
+							</div>
 						</button>
 					{:else}
 						<p class="empty-card">
@@ -2156,9 +2171,14 @@ function getEntryCategoryOptions(
 								<strong>{entry.merchant}</strong>
 								<small>{formatDate(entry.occurredOn)} · {categoryName(entry.categoryId)} · {accountName(entry.accountId)}</small>
 							</div>
-							<b class:negative={entry.type === 'expense'}>
-								{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}
-							</b>
+							<div class="transaction-amount-cell">
+								<b class:negative={entry.type === 'expense'}>
+									{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}
+								</b>
+								{#if isForeignTransaction(entry)}
+									<small class="transaction-base-amount">{transactionBaseListAmount(entry)}</small>
+								{/if}
+							</div>
 						</button>
 					{:else}
 						<p class="empty-card">
@@ -3066,7 +3086,12 @@ function getEntryCategoryOptions(
 						<strong>{entry.merchant}</strong>
 						<span>{categoryName(entry.categoryId)}</span>
 						<span>{accountName(entry.accountId)}</span>
-						<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}</b>
+						<div class="transaction-amount-cell">
+							<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}</b>
+							{#if isForeignTransaction(entry)}
+								<small class="transaction-base-amount">{transactionBaseListAmount(entry)}</small>
+							{/if}
+						</div>
 					</button>
 				{:else}
 					<p class="muted">{transactionSearchQueryNormalized ? 'No matching transactions.' : 'No transactions yet.'}</p>
@@ -3144,7 +3169,12 @@ function getEntryCategoryOptions(
 								<strong>{entry.merchant}</strong>
 								<span>{categoryName(entry.categoryId)}</span>
 								<span>{accountName(entry.accountId)}</span>
-								<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}</b>
+								<div class="transaction-amount-cell">
+									<b class:negative={entry.type === 'expense'}>{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}</b>
+									{#if isForeignTransaction(entry)}
+										<small class="transaction-base-amount">{transactionBaseListAmount(entry)}</small>
+									{/if}
+								</div>
 							</button>
 						{:else}
 							<p class="muted">
