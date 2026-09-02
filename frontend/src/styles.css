@@ -594,6 +594,16 @@ form {
 	grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.field-grid > label {
+	min-width: 0;
+}
+
+@media (max-width: 500px) {
+	.transaction-date-note-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
 .account-status-toggle {
 	align-items: center;
 	background: color-mix(in srgb, var(--muted) 7%, var(--field));

@@ -2248,7 +2248,7 @@ function getEntryCategoryOptions(
 								/>
 							</label>
 						</div>
-						<div class="field-grid">
+						<div class="field-grid transaction-date-note-grid">
 							<label>
 								Date
 								<input bind:value={transactionEditDate} name="occurredOn" type="date" required />
@@ -3252,7 +3252,7 @@ function getEntryCategoryOptions(
 										/>
 									</label>
 								</div>
-								<div class="field-grid">
+								<div class="field-grid transaction-date-note-grid">
 									<label>
 										Date
 										<input bind:value={transactionEditDate} name="occurredOn" type="date" required />
