@@ -132,6 +132,67 @@ create table if not exists spendit.expense_category_rules (
 	deleted_at timestamptz
 );
 
+-- Statement ingestion stores only normalized fields required for review. Raw PDF
+-- bytes and extracted page text are intentionally local-client data.
+create table if not exists spendit.expense_statement_ingestions (
+	id uuid primary key default gen_random_uuid(),
+	group_id uuid not null references spendit.expense_groups(id) on delete cascade,
+	account_id uuid not null references spendit.expense_accounts(id) on delete restrict,
+	client_request_id text not null default '',
+	source_fingerprint text not null default '',
+	status text not null check (status in ('parsed', 'matching_review', 'ready', 'confirmed', 'failed', 'deleted')),
+	source_name text not null,
+	institution text not null default '',
+	statement_currency text not null default 'SGD',
+	statement_date date,
+	payment_due_date date,
+	period_start date,
+	period_end date,
+	previous_balance integer,
+	declared_new_transactions_total integer,
+	statement_grand_total integer,
+	parsed_row_count integer not null default 0,
+	cardholder_controls jsonb not null default '[]'::jsonb,
+	validation jsonb not null default '{}'::jsonb,
+	warnings jsonb not null default '[]'::jsonb,
+	created_by uuid references spendit.expense_users(id) on delete set null,
+	confirmed_at timestamptz,
+	created_at timestamptz not null default now(),
+	updated_at timestamptz not null default now(),
+	deleted_at timestamptz
+);
+
+create table if not exists spendit.expense_statement_ingestion_rows (
+	id uuid primary key default gen_random_uuid(),
+	ingestion_id uuid not null references spendit.expense_statement_ingestions(id) on delete cascade,
+	group_id uuid not null references spendit.expense_groups(id) on delete cascade,
+	source_row_key text not null,
+	occurred_on date,
+	merchant text not null default '',
+	amount integer not null default 0 check (amount >= 0),
+	currency text not null default 'SGD',
+	foreign_amount integer check (foreign_amount is null or foreign_amount >= 0),
+	foreign_currency text not null default '',
+	statement_kind text not null default 'transaction' check (statement_kind in ('transaction', 'payment', 'fee', 'refund', 'other')),
+	type text not null default 'expense' check (type in ('expense', 'income')),
+	cardholder text not null default '',
+	statement_reference text not null default '',
+	account_id uuid references spendit.expense_accounts(id) on delete set null,
+	category_id uuid references spendit.expense_categories(id) on delete set null,
+	note text not null default '',
+	review_status text not null default 'unreviewed' check (review_status in ('unreviewed', 'new', 'matched', 'ignored')),
+	suggested_expense_id uuid references spendit.expense_entries(id) on delete set null,
+	match_confidence numeric(4,3),
+	match_expense_id uuid references spendit.expense_entries(id) on delete set null,
+	confirmed_expense_id uuid references spendit.expense_entries(id) on delete set null,
+	warning_codes jsonb not null default '[]'::jsonb,
+	reviewed_by uuid references spendit.expense_users(id) on delete set null,
+	reviewed_at timestamptz,
+	created_at timestamptz not null default now(),
+	updated_at timestamptz not null default now(),
+	deleted_at timestamptz
+);
+
 create unique index if not exists expense_accounts_group_name_uidx
 on spendit.expense_accounts (group_id, lower(name))
 where deleted_at is null;
@@ -164,3 +225,31 @@ where deleted_at is null;
 create index if not exists expense_entries_group_account_period_idx
 on spendit.expense_entries (group_id, account_id, occurred_on desc)
 where deleted_at is null;
+
+create index if not exists expense_statement_ingestions_group_updated_idx
+on spendit.expense_statement_ingestions (group_id, updated_at desc)
+where deleted_at is null;
+
+create unique index if not exists expense_statement_ingestions_client_request_uidx
+on spendit.expense_statement_ingestions (group_id, client_request_id)
+where deleted_at is null and client_request_id <> '';
+
+create unique index if not exists expense_statement_ingestions_fingerprint_uidx
+on spendit.expense_statement_ingestions (group_id, source_fingerprint)
+where deleted_at is null and source_fingerprint <> '';
+
+create unique index if not exists expense_statement_ingestion_rows_source_uidx
+on spendit.expense_statement_ingestion_rows (ingestion_id, source_row_key)
+where deleted_at is null;
+
+create unique index if not exists expense_statement_ingestion_rows_match_uidx
+on spendit.expense_statement_ingestion_rows (ingestion_id, match_expense_id)
+where deleted_at is null and match_expense_id is not null;
+
+create index if not exists expense_statement_ingestion_rows_review_idx
+on spendit.expense_statement_ingestion_rows (ingestion_id, review_status, occurred_on)
+where deleted_at is null;
+
+create index if not exists expense_statement_ingestion_rows_suggestion_idx
+on spendit.expense_statement_ingestion_rows (ingestion_id, suggested_expense_id)
+where deleted_at is null and suggested_expense_id is not null;

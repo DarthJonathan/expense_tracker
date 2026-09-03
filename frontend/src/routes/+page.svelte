@@ -16,7 +16,8 @@
 	} from 'lucide-svelte';
 	import { Collapsible, DatePicker, Meter, Tabs } from 'bits-ui';
 	import { parseDate, type DateValue } from '@internationalized/date';
-	import AppSelect from '$lib/components/AppSelect.svelte';
+	import AppSelect, { consumeSelectClickThroughGuard } from '$lib/components/AppSelect.svelte';
+	import StatementIngestion from '$lib/components/StatementIngestion.svelte';
 	import { onMount, tick } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import { buildPeriodSummaries, getCurrentBalance, periodKey, readablePeriod } from '$lib/reporting';
@@ -36,8 +37,8 @@
 	} from '$lib/utils';
 
 	type Screen = 'home' | 'review' | 'add' | 'transactions' | 'search' | 'transactionDetail' | 'settings';
-	type DesktopScreen = 'dashboard' | 'transactions' | 'transactionDetail' | 'accounts' | 'review' | 'settings' | 'add';
-	type SettingsSubpage = 'overview' | 'accounts' | 'accountEdit' | 'categories' | 'categoryEdit' | 'adjustments';
+	type DesktopScreen = 'dashboard' | 'transactions' | 'transactionDetail' | 'accounts' | 'review' | 'statements' | 'settings' | 'add';
+	type SettingsSubpage = 'overview' | 'accounts' | 'accountEdit' | 'categories' | 'categoryEdit' | 'adjustments' | 'statements';
 	type StatItem = { name: string; color: string; amount: number };
 	type BudgetComparisonItem = { id: string; name: string; color: string; spent: number; target: number; fillPercent: number };
 	type FeedbackKind = 'success' | 'error';
@@ -73,8 +74,10 @@
 	let transactionSearchMonthsBack = '6';
 	let transactionSearchOrigin: Screen = 'transactions';
 	let mobileTransactionCategoryId = '';
-	let mobileTransactionPeriodKey = '';
+	let mobileTransactionPeriodKey = todayInputValue().slice(0, 7);
 	let mobileTransactionGrain: PeriodGrain = 'month';
+	let mobileTransactionsScrollTop = 0;
+	let restoreMobileTransactionsScroll = false;
 	let remoteSearchResults: LedgerEntry[] | null = null;
 	let remoteSearchError = '';
 	let remoteSearchLoading = false;
@@ -381,19 +384,19 @@
 	$: transactionSearchQueryNormalized = normalizeMerchantText(transactionSearchQuery);
 	$: filteredTransactions = filterTransactions(allTransactions, transactionSearchQueryNormalized, transactionSearchMonthsBack);
 	$: desktopFilteredTransactions = filterTransactions(desktopViewTransactions, transactionSearchQueryNormalized, 'all');
-	$: mobileTransactions =
-		mobileTransactionCategoryId && mobileTransactionPeriodKey
-			? allTransactions.filter(
-					(entry) =>
-						entry.categoryId === mobileTransactionCategoryId &&
-						periodKey(entry.occurredOn, mobileTransactionGrain) === mobileTransactionPeriodKey
-				)
-			: allTransactions;
+	$: mobileTransactions = mobileTransactionPeriodKey
+		? allTransactions.filter(
+				(entry) =>
+					(!mobileTransactionCategoryId || entry.categoryId === mobileTransactionCategoryId) &&
+					periodKey(entry.occurredOn, mobileTransactionGrain) === mobileTransactionPeriodKey
+			)
+		: allTransactions;
 	$: mobileTransactionCategory = allCategories.find((category) => category.id === mobileTransactionCategoryId);
+	$: mobileTransactionPeriodLabel = mobileTransactionPeriodKey
+		? readablePeriod(mobileTransactionPeriodKey, mobileTransactionGrain)
+		: 'All time';
 	$: mobileTransactionFilterLabel =
-		mobileTransactionCategory && mobileTransactionPeriodKey
-			? `${mobileTransactionCategory.name} · ${readablePeriod(mobileTransactionPeriodKey, mobileTransactionGrain)}`
-			: '';
+		mobileTransactionCategory ? `${mobileTransactionCategory.name} · ${mobileTransactionPeriodLabel}` : mobileTransactionPeriodLabel;
 	$: searchPageResults = remoteSearchResults ?? filteredTransactions;
 	$: topCategories = (currentSummary?.categories ?? []).filter((item) => Math.abs(item.net) > 0).slice(0, 4);
 	$: homeTiles = topCategories.length
@@ -633,6 +636,7 @@
 	}
 
 	async function submitMovement(event: SubmitEvent, view: 'mobile' | 'desktop') {
+		if (consumeSelectClickThroughGuard()) return;
 		const form = event.currentTarget as HTMLFormElement;
 		const formData = new FormData(form);
 
@@ -877,7 +881,8 @@
 
 	function openMobileTransactions(): void {
 		mobileTransactionCategoryId = '';
-		mobileTransactionPeriodKey = '';
+		mobileTransactionPeriodKey = currentMonthKey;
+		mobileTransactionGrain = 'month';
 		activeScreen = 'transactions';
 	}
 
@@ -888,9 +893,17 @@
 		activeScreen = 'transactions';
 	}
 
+	function openReviewHistory(): void {
+		mobileTransactionCategoryId = '';
+		mobileTransactionPeriodKey = selectedReviewPeriodKey || currentMonthKey;
+		mobileTransactionGrain = grain;
+		activeScreen = 'transactions';
+	}
+
 	function clearMobileTransactionFilter(): void {
 		mobileTransactionCategoryId = '';
-		mobileTransactionPeriodKey = '';
+		mobileTransactionPeriodKey = currentMonthKey;
+		mobileTransactionGrain = 'month';
 	}
 
 	async function openDesktopTransactionSearch(): Promise<void> {
@@ -925,11 +938,27 @@
 	}
 
 	function openTransactionDetail(entryId: string, fallback?: LedgerEntry): void {
+		restoreMobileTransactionsScroll = activeScreen === 'transactions';
+		if (restoreMobileTransactionsScroll) {
+			mobileTransactionsScrollTop = transactionsScreenEl?.scrollTop ?? 0;
+		}
 		selectedTransactionId = entryId;
 		selectedTransactionFallback = fallback ?? null;
 		transactionEditMode = false;
 		transactionDeleteConfirmOpen = false;
 		activeScreen = 'transactionDetail';
+	}
+
+	async function closeMobileTransactionDetail(): Promise<void> {
+		const shouldRestoreScroll = restoreMobileTransactionsScroll;
+		const scrollTop = mobileTransactionsScrollTop;
+		restoreMobileTransactionsScroll = false;
+		transactionEditMode = false;
+		transactionDeleteConfirmOpen = false;
+		activeScreen = 'transactions';
+		if (!shouldRestoreScroll) return;
+		await tick();
+		if (transactionsScreenEl) transactionsScreenEl.scrollTop = scrollTop;
 	}
 
 	function openDesktopTransactionDetail(
@@ -982,7 +1011,7 @@
 			selectedTransactionId = '';
 			selectedTransactionFallback = null;
 			transactionDeleteConfirmOpen = false;
-			if (activeScreen === 'transactionDetail') activeScreen = 'transactions';
+			if (activeScreen === 'transactionDetail') await closeMobileTransactionDetail();
 			if (desktopScreen === 'transactionDetail') closeDesktopTransactionDetail();
 
 			if (navigator.onLine && authSession && groupId) {
@@ -1023,6 +1052,7 @@
 	}
 
 	async function submitTransactionUpdate(event: SubmitEvent): Promise<void> {
+		if (consumeSelectClickThroughGuard()) return;
 		if (!selectedTransaction) return;
 		const form = event.currentTarget as HTMLFormElement;
 		const formData = new FormData(form);
@@ -1392,6 +1422,12 @@ function getEntryCategoryOptions(
 	}
 
 	function getDesktopHeading(screen: DesktopScreen, groupName?: string): { title: string; subtitle: string } {
+		if (screen === 'statements') {
+			return {
+				title: 'Statement imports',
+				subtitle: `Private on-device parsing and durable review for ${groupName ?? 'your household'}.`
+			};
+		}
 		if (screen === 'settings') {
 			return {
 				title: 'Settings',
@@ -1693,6 +1729,7 @@ function getEntryCategoryOptions(
 	{#if activeScreen === 'home'}
 		<section
 			bind:this={homeScreenEl}
+			aria-label="Home dashboard"
 			class="screen home-screen pull-refresh-screen"
 			style={`--pull-offset:${pullRefreshScreen === 'home' ? `${pullDistance}px` : '0px'}`}
 			on:touchstart|passive={(event) => handlePullStart('home', event)}
@@ -1913,7 +1950,12 @@ function getEntryCategoryOptions(
 				</div>
 				<div class="transaction-list">
 					{#each reviewTopTransactions as entry}
-						<article class="transaction-row">
+						<button
+							class="transaction-row review-transaction-row"
+							type="button"
+							aria-label={`Open transaction ${entry.merchant} ${transactionAmount(entry)}`}
+							on:click={() => openTransactionDetail(entry.id)}
+						>
 							<div class="avatar">{entryIcon(entry.merchant)}</div>
 							<div>
 								<h3>{entry.merchant}</h3>
@@ -1922,14 +1964,14 @@ function getEntryCategoryOptions(
 							<strong class:negative={entry.type === 'expense'}>
 								{entry.type === 'expense' ? '-' : '+'}{transactionAmount(entry)}
 							</strong>
-						</article>
+						</button>
 					{:else}
 						<p class="empty-card">No {reviewEntryType} transactions in this period.</p>
 					{/each}
 				</div>
 			</section>
 
-			<button class="history-pill" type="button">History</button>
+			<button class="history-pill" type="button" on:click={openReviewHistory}>History</button>
 		</section>
 	{:else if activeScreen === 'add'}
 			<section class="screen">
@@ -2078,6 +2120,7 @@ function getEntryCategoryOptions(
 	{:else if activeScreen === 'transactions'}
 			<section
 				bind:this={transactionsScreenEl}
+				aria-label="Transactions"
 				class="screen pull-refresh-screen"
 				style={`--pull-offset:${pullRefreshScreen === 'transactions' ? `${pullDistance}px` : '0px'}`}
 				on:touchstart|passive={(event) => handlePullStart('transactions', event)}
@@ -2101,7 +2144,9 @@ function getEntryCategoryOptions(
 				{#if mobileTransactionFilterLabel}
 					<div class="mobile-transaction-filter">
 						<span>{mobileTransactionFilterLabel}</span>
-						<button type="button" on:click={clearMobileTransactionFilter} aria-label="Clear category filter">×</button>
+						{#if mobileTransactionCategoryId}
+							<button type="button" on:click={clearMobileTransactionFilter} aria-label="Clear category filter">×</button>
+						{/if}
 					</div>
 				{/if}
 				<div class="transaction-table-head">
@@ -2134,9 +2179,9 @@ function getEntryCategoryOptions(
 						</button>
 					{:else}
 						<p class="empty-card">
-							{mobileTransactionFilterLabel
+							{mobileTransactionCategoryId
 								? `No transactions for ${mobileTransactionFilterLabel}.`
-								: 'No transactions yet.'}
+								: `No transactions in ${mobileTransactionPeriodLabel}.`}
 						</p>
 					{/each}
 				</div>
@@ -2195,7 +2240,7 @@ function getEntryCategoryOptions(
 				<header class="screen-header">
 					<span class="header-spacer"></span>
 					<h1>Transaction Detail</h1>
-					<button class="plain-icon-button" title="Close" type="button" on:click={() => (activeScreen = 'transactions')}>×</button>
+					<button class="plain-icon-button" title="Close" type="button" on:click={closeMobileTransactionDetail}>×</button>
 				</header>
 			{#if selectedTransaction}
 				{#if transactionEditMode}
@@ -2365,6 +2410,7 @@ function getEntryCategoryOptions(
 						<button type="button" on:click={() => openSettingsSubpage('categories')}>Modify categories</button>
 					</div>
 					<button class="ghost" type="button" on:click={() => openSettingsSubpage('adjustments')}>Manual category add/minus</button>
+					<button class="ghost" type="button" on:click={() => openSettingsSubpage('statements')}>Statement imports</button>
 				</section>
 
 				<form class="form-card" on:submit|preventDefault={(event) => submitAndSync(finance.updateGroupName, event)}>
@@ -2422,6 +2468,16 @@ function getEntryCategoryOptions(
 						</div>
 					{/if}
 				</form>
+			{:else if settingsSubpage === 'statements'}
+				<section class="settings-list">
+					<div class="settings-subpage-heading">
+						<h2>Statement imports</h2>
+						<button class="ghost" type="button" on:click={() => openSettingsSubpage('overview')}>Back to settings</button>
+					</div>
+					{#if activeGroup}
+						<StatementIngestion groupId={activeGroup.id} {accounts} {categories} entries={entries} onConfirmed={() => finance.syncNow()} />
+					{/if}
+				</section>
 			{:else if settingsSubpage === 'accounts'}
 				<section class="settings-list clickable-settings-list">
 					<div class="settings-subpage-heading">
@@ -2741,6 +2797,9 @@ function getEntryCategoryOptions(
 			</a>
 			<a href="#review" class:active={desktopScreen === 'review'} on:click|preventDefault={() => (desktopScreen = 'review')}>
 				<BarChart3 size={18} /> Review
+			</a>
+			<a href="#statements" class:active={desktopScreen === 'statements'} on:click|preventDefault={() => (desktopScreen = 'statements')}>
+				<ClipboardList size={18} /> Statement imports
 			</a>
 			<a href="#settings" class:active={desktopScreen === 'settings'} on:click|preventDefault={() => (desktopScreen = 'settings')}>
 				<Settings size={18} /> Settings
@@ -3755,6 +3814,12 @@ function getEntryCategoryOptions(
 							<Plus size={20} aria-hidden="true" />
 						</button>
 					</form>
+				</section>
+			{:else if desktopScreen === 'statements'}
+				<section class="desktop-card desktop-page-card">
+					{#if activeGroup}
+						<StatementIngestion groupId={activeGroup.id} {accounts} {categories} entries={entries} onConfirmed={() => finance.syncNow()} />
+					{/if}
 				</section>
 			{:else if desktopScreen === 'settings'}
 				<section class="desktop-card desktop-page-card">

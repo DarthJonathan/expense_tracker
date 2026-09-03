@@ -105,3 +105,88 @@ export interface PeriodSummary {
 	endingBalance: number;
 	categories: PeriodCategoryTotal[];
 }
+
+export type StatementIngestionStatus = 'local_parsing' | 'parsed' | 'matching_review' | 'ready' | 'confirmed' | 'failed' | 'deleted';
+export type StatementReviewStatus = 'unreviewed' | 'new' | 'matched' | 'ignored';
+export type StatementKind = 'transaction' | 'payment' | 'fee' | 'refund' | 'other';
+
+export interface StatementIngestion {
+	id: string;
+	groupId: string;
+	accountId: string;
+	clientRequestId?: string;
+	sourceFingerprint?: string;
+	status: Exclude<StatementIngestionStatus, 'local_parsing'>;
+	sourceName: string;
+	institution: string;
+	statementCurrency: string;
+	statementDate?: string | null;
+	paymentDueDate?: string | null;
+	periodStart?: string | null;
+	periodEnd?: string | null;
+	previousBalance?: number | null;
+	declaredNewTransactionsTotal?: number | null;
+	statementGrandTotal?: number | null;
+	parsedRowCount: number;
+	cardholderControls: Array<Record<string, unknown>>;
+	validation: Record<string, unknown>;
+	warnings: string[];
+	createdBy?: string | null;
+	confirmedAt?: string | null;
+	createdAt: string;
+	updatedAt: string;
+	deletedAt?: string | null;
+}
+
+export interface StatementIngestionRow {
+	id: string;
+	ingestionId: string;
+	groupId: string;
+	sourceRowKey: string;
+	occurredOn?: string | null;
+	merchant: string;
+	amount: number;
+	currency: string;
+	foreignAmount?: number | null;
+	foreignCurrency: string;
+	statementKind: StatementKind;
+	type: EntryType;
+	cardholder: string;
+	statementReference: string;
+	accountId?: string | null;
+	categoryId?: string | null;
+	note: string;
+	reviewStatus: StatementReviewStatus;
+	suggestedExpenseId?: string | null;
+	matchConfidence?: number | null;
+	matchExpenseId?: string | null;
+	confirmedExpenseId?: string | null;
+	warningCodes: string[];
+	reviewedBy?: string | null;
+	reviewedAt?: string | null;
+	createdAt: string;
+	updatedAt: string;
+	deletedAt?: string | null;
+}
+
+export interface StatementIngestionDetail {
+	ingestion: StatementIngestion;
+	rows: StatementIngestionRow[];
+}
+
+// Kept in IndexedDB only. The Blob is never included in an API request.
+export interface LocalStatementJob {
+	id: string;
+	groupId: string;
+	accountId: string;
+	file: Blob;
+	fileName: string;
+	fileType: string;
+	sourceFingerprint: string;
+	status: Extract<StatementIngestionStatus, 'local_parsing' | 'failed'>;
+	stage: 'embedded_text' | 'ocr' | 'structured_ready' | 'saving_structured' | 'failed';
+	parsedPayload?: Record<string, unknown>;
+	createdAt: string;
+	updatedAt: string;
+	error?: string;
+}

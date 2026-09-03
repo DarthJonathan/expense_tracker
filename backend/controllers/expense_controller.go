@@ -503,14 +503,153 @@ func (c *ExpenseController) ListAdjustmentsV1(w http.ResponseWriter, r *http.Req
 	})
 }
 
+func (c *ExpenseController) CreateStatementIngestionV1(w http.ResponseWriter, r *http.Request) {
+	groupID, userID, ok := c.statementRequestScope(w, r)
+	if !ok {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 5<<20)
+	req := &request.CreateStatementIngestionRequest{}
+	if err := c.decodeStrictJSON(req, r); err != nil {
+		c.writeStatementError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	detail, err := c.Service.CreateStatementIngestion(r.Context(), groupID, userID, req)
+	if err != nil {
+		c.writeStatementError(w, errorStatus(err), err.Error())
+		return
+	}
+	c.writeJSON(w, http.StatusCreated, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: true}, Data: detail})
+}
+
+func (c *ExpenseController) ListStatementIngestionsV1(w http.ResponseWriter, r *http.Request) {
+	groupID, userID, ok := c.statementRequestScope(w, r)
+	if !ok {
+		return
+	}
+	records, err := c.Service.ListStatementIngestions(r.Context(), groupID, userID)
+	if err != nil {
+		c.writeStatementError(w, errorStatus(err), err.Error())
+		return
+	}
+	c.writeJSON(w, http.StatusOK, response.StatementIngestionListResponse{BaseResponse: response.BaseResponse{Success: true}, Data: records})
+}
+
+func (c *ExpenseController) GetStatementIngestionV1(w http.ResponseWriter, r *http.Request) {
+	groupID, userID, ok := c.statementRequestScope(w, r)
+	if !ok {
+		return
+	}
+	ingestionID := strings.TrimSpace(mux.Vars(r)["ingestionId"])
+	if ingestionID == "" {
+		c.writeStatementError(w, http.StatusBadRequest, "ingestionId is required")
+		return
+	}
+	detail, err := c.Service.GetStatementIngestion(r.Context(), groupID, ingestionID, userID)
+	if err != nil {
+		c.writeStatementError(w, errorStatus(err), err.Error())
+		return
+	}
+	c.writeJSON(w, http.StatusOK, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: true}, Data: detail})
+}
+
+func (c *ExpenseController) UpdateStatementIngestionRowV1(w http.ResponseWriter, r *http.Request) {
+	groupID, userID, ok := c.statementRequestScope(w, r)
+	if !ok {
+		return
+	}
+	vars := mux.Vars(r)
+	ingestionID, rowID := strings.TrimSpace(vars["ingestionId"]), strings.TrimSpace(vars["rowId"])
+	if ingestionID == "" || rowID == "" {
+		c.writeStatementError(w, http.StatusBadRequest, "ingestionId and rowId are required")
+		return
+	}
+	req := &request.UpdateStatementIngestionRowRequest{}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := c.decodeStrictJSON(req, r); err != nil {
+		c.writeStatementError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	detail, err := c.Service.UpdateStatementIngestionRow(r.Context(), groupID, ingestionID, rowID, userID, req)
+	if err != nil {
+		c.writeStatementError(w, errorStatus(err), err.Error())
+		return
+	}
+	c.writeJSON(w, http.StatusOK, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: true}, Data: detail})
+}
+
+func (c *ExpenseController) ConfirmStatementIngestionV1(w http.ResponseWriter, r *http.Request) {
+	groupID, userID, ok := c.statementRequestScope(w, r)
+	if !ok {
+		return
+	}
+	ingestionID := strings.TrimSpace(mux.Vars(r)["ingestionId"])
+	if ingestionID == "" {
+		c.writeStatementError(w, http.StatusBadRequest, "ingestionId is required")
+		return
+	}
+	detail, err := c.Service.ConfirmStatementIngestion(r.Context(), groupID, ingestionID, userID)
+	if err != nil {
+		c.writeStatementError(w, errorStatus(err), err.Error())
+		return
+	}
+	c.writeJSON(w, http.StatusOK, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: true}, Data: detail})
+}
+
+func (c *ExpenseController) DeleteStatementIngestionV1(w http.ResponseWriter, r *http.Request) {
+	groupID, userID, ok := c.statementRequestScope(w, r)
+	if !ok {
+		return
+	}
+	ingestionID := strings.TrimSpace(mux.Vars(r)["ingestionId"])
+	if ingestionID == "" {
+		c.writeStatementError(w, http.StatusBadRequest, "ingestionId is required")
+		return
+	}
+	detail, err := c.Service.DeleteStatementIngestion(r.Context(), groupID, ingestionID, userID)
+	if err != nil {
+		c.writeStatementError(w, errorStatus(err), err.Error())
+		return
+	}
+	c.writeJSON(w, http.StatusOK, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: true}, Data: detail})
+}
+
+func (c *ExpenseController) statementRequestScope(w http.ResponseWriter, r *http.Request) (string, string, bool) {
+	groupID := strings.TrimSpace(mux.Vars(r)["groupId"])
+	if groupID == "" {
+		c.writeStatementError(w, http.StatusBadRequest, "groupId is required")
+		return "", "", false
+	}
+	userID, _ := r.Context().Value(constants.AuthUserIDCtx).(string)
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		c.writeStatementError(w, http.StatusUnauthorized, "unauthorized")
+		return "", "", false
+	}
+	return groupID, userID, true
+}
+
+func (c *ExpenseController) writeStatementError(w http.ResponseWriter, status int, message string) {
+	c.writeJSON(w, status, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: false, Error: message}})
+}
+
 func errorStatus(err error) int {
 	message := strings.ToLower(err.Error())
 
 	switch {
 	case strings.Contains(message, "not found"):
 		return http.StatusNotFound
+	case strings.Contains(message, "changed during"),
+		strings.Contains(message, "cannot be edited"),
+		strings.Contains(message, "not ready for confirmation"),
+		strings.Contains(message, "already assigned"):
+		return http.StatusConflict
 	case strings.Contains(message, "required"),
 		strings.Contains(message, "must be"),
+		strings.Contains(message, "at most"),
+		strings.Contains(message, "duplicated"),
+		strings.Contains(message, "type mismatch"),
+		strings.Contains(message, "greater than"),
 		strings.Contains(message, "invalid input syntax for type uuid"),
 		strings.Contains(message, "violates foreign key constraint"),
 		strings.Contains(message, "violates check constraint"),

@@ -80,3 +80,66 @@ type CreateAdjustmentRequest struct {
 	OccurredOn string `json:"occurredOn"`
 	Note       string `json:"note"`
 }
+
+// CreateStatementIngestionRequest intentionally contains no PDF bytes, data URL,
+// extracted page text, or OCR payload. The browser normalizes locally and sends
+// only the structured fields needed for collaborative review.
+type CreateStatementIngestionRequest struct {
+	AccountID                    string                               `json:"accountId"`
+	ClientRequestID              string                               `json:"clientRequestId,omitempty"`
+	SourceFingerprint            string                               `json:"sourceFingerprint,omitempty"`
+	SourceName                   string                               `json:"sourceName"`
+	Institution                  string                               `json:"institution,omitempty"`
+	StatementCurrency            string                               `json:"statementCurrency"`
+	StatementDate                string                               `json:"statementDate,omitempty"`
+	PaymentDueDate               string                               `json:"paymentDueDate,omitempty"`
+	PeriodStart                  string                               `json:"periodStart,omitempty"`
+	PeriodEnd                    string                               `json:"periodEnd,omitempty"`
+	PreviousBalance              *int                                 `json:"previousBalance,omitempty"`
+	DeclaredNewTransactionsTotal *int                                 `json:"declaredNewTransactionsTotal,omitempty"`
+	StatementGrandTotal          *int                                 `json:"statementGrandTotal,omitempty"`
+	Warnings                     []string                             `json:"warnings,omitempty"`
+	Cardholders                  []StatementCardholderRequest         `json:"cardholders,omitempty"`
+	Rows                         []CreateStatementIngestionRowRequest `json:"rows"`
+}
+
+type StatementCardholderRequest struct {
+	Name             string `json:"name"`
+	DeclaredRowCount *int   `json:"declaredRowCount,omitempty"`
+	DeclaredSubtotal *int   `json:"declaredSubtotal,omitempty"`
+}
+
+type CreateStatementIngestionRowRequest struct {
+	SourceRowKey       string   `json:"sourceRowKey"`
+	OccurredOn         string   `json:"occurredOn,omitempty"`
+	Merchant           string   `json:"merchant"`
+	Amount             int      `json:"amount"`
+	Currency           string   `json:"currency,omitempty"`
+	ForeignAmount      *int     `json:"foreignAmount,omitempty"`
+	ForeignCurrency    string   `json:"foreignCurrency,omitempty"`
+	StatementKind      string   `json:"statementKind,omitempty"`
+	Type               string   `json:"type,omitempty"`
+	Cardholder         string   `json:"cardholder,omitempty"`
+	StatementReference string   `json:"statementReference,omitempty"`
+	AccountID          string   `json:"accountId,omitempty"`
+	CategoryID         string   `json:"categoryId,omitempty"`
+	Note               string   `json:"note,omitempty"`
+	WarningCodes       []string `json:"warningCodes,omitempty"`
+}
+
+type UpdateStatementIngestionRowRequest struct {
+	OccurredOn      *string   `json:"occurredOn,omitempty"`
+	Merchant        *string   `json:"merchant,omitempty"`
+	Amount          *int      `json:"amount,omitempty"`
+	Currency        *string   `json:"currency,omitempty"`
+	ForeignAmount   *int      `json:"foreignAmount,omitempty"`
+	ForeignCurrency *string   `json:"foreignCurrency,omitempty"`
+	StatementKind   *string   `json:"statementKind,omitempty"`
+	Type            *string   `json:"type,omitempty"`
+	AccountID       *string   `json:"accountId,omitempty"`
+	CategoryID      *string   `json:"categoryId,omitempty"`
+	Note            *string   `json:"note,omitempty"`
+	ReviewStatus    *string   `json:"reviewStatus,omitempty"`
+	MatchExpenseID  *string   `json:"matchExpenseId,omitempty"`
+	WarningCodes    *[]string `json:"warningCodes,omitempty"`
+}

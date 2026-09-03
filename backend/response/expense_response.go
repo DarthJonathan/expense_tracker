@@ -46,3 +46,18 @@ type AdjustmentResponse struct {
 	BaseResponse
 	Data *dao.ExpenseCategoryAdjustment `json:"data,omitempty"`
 }
+
+type StatementIngestionListResponse struct {
+	BaseResponse
+	Data []dao.ExpenseStatementIngestion `json:"data,omitempty"`
+}
+
+type StatementIngestionResponse struct {
+	BaseResponse
+	Data *StatementIngestionDetail `json:"data,omitempty"`
+}
+
+type StatementIngestionDetail struct {
+	Ingestion dao.ExpenseStatementIngestion      `json:"ingestion"`
+	Rows      []dao.ExpenseStatementIngestionRow `json:"rows"`
+}

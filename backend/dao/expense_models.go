@@ -57,7 +57,7 @@ type ExpenseEntry struct {
 	BaseAmount   int            `gorm:"column:base_amount;not null;default:0" json:"baseAmount"`
 	BaseCurrency string         `gorm:"column:base_currency;type:text;not null;default:'SGD'" json:"baseCurrency"`
 	FxRate       float64        `gorm:"column:fx_rate;type:numeric(20,10);not null;default:1" json:"fxRate"`
-	FxRateDate   string         `gorm:"column:fx_rate_date;type:date;not null;default:CURRENT_DATE" json:"fxRateDate"`
+	FxRateDate   string         `gorm:"column:fx_rate_date;type:date;not null" json:"fxRateDate"`
 	OccurredOn   string         `gorm:"column:occurred_on;type:date;not null" json:"occurredOn"`
 	Merchant     string         `gorm:"column:merchant;type:text;not null" json:"merchant"`
 	Note         string         `gorm:"column:note;type:text;not null;default:''" json:"note"`
@@ -139,4 +139,88 @@ type ExpenseCategoryRule struct {
 
 func (ExpenseCategoryRule) TableName() string {
 	return QualifiedTable("expense_category_rules")
+}
+
+// ExpenseStatementIngestion is deliberately limited to normalized statement data.
+// The source PDF and page text never have a column in this model: those stay in the
+// browser's IndexedDB while a client-side job is running.
+type ExpenseStatementIngestion struct {
+	ID                           string           `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	GroupID                      string           `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
+	AccountID                    string           `gorm:"column:account_id;type:uuid;not null;index" json:"accountId"`
+	ClientRequestID              string           `gorm:"column:client_request_id;type:text;not null;default:''" json:"clientRequestId,omitempty"`
+	SourceFingerprint            string           `gorm:"column:source_fingerprint;type:text;not null;default:''" json:"sourceFingerprint,omitempty"`
+	Status                       string           `gorm:"column:status;type:text;not null;index" json:"status"`
+	SourceName                   string           `gorm:"column:source_name;type:text;not null" json:"sourceName"`
+	Institution                  string           `gorm:"column:institution;type:text;not null;default:''" json:"institution"`
+	StatementCurrency            string           `gorm:"column:statement_currency;type:text;not null;default:'SGD'" json:"statementCurrency"`
+	StatementDate                *string          `gorm:"column:statement_date;type:date" json:"statementDate,omitempty"`
+	PaymentDueDate               *string          `gorm:"column:payment_due_date;type:date" json:"paymentDueDate,omitempty"`
+	PeriodStart                  *string          `gorm:"column:period_start;type:date" json:"periodStart,omitempty"`
+	PeriodEnd                    *string          `gorm:"column:period_end;type:date" json:"periodEnd,omitempty"`
+	PreviousBalance              *int             `gorm:"column:previous_balance" json:"previousBalance,omitempty"`
+	DeclaredNewTransactionsTotal *int             `gorm:"column:declared_new_transactions_total" json:"declaredNewTransactionsTotal,omitempty"`
+	StatementGrandTotal          *int             `gorm:"column:statement_grand_total" json:"statementGrandTotal,omitempty"`
+	ParsedRowCount               int              `gorm:"column:parsed_row_count;not null;default:0" json:"parsedRowCount"`
+	CardholderControls           []map[string]any `gorm:"column:cardholder_controls;type:jsonb;serializer:json;not null;default:'[]'" json:"cardholderControls"`
+	Validation                   map[string]any   `gorm:"column:validation;type:jsonb;serializer:json;not null;default:'{}'" json:"validation"`
+	Warnings                     []string         `gorm:"column:warnings;type:jsonb;serializer:json;not null;default:'[]'" json:"warnings"`
+	CreatedBy                    *string          `gorm:"column:created_by;type:uuid" json:"createdBy,omitempty"`
+	ConfirmedAt                  *time.Time       `gorm:"column:confirmed_at" json:"confirmedAt,omitempty"`
+	CreatedAt                    time.Time        `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
+	UpdatedAt                    time.Time        `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
+	DeletedAt                    *time.Time       `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
+	Group                        *ExpenseGroup    `gorm:"foreignKey:GroupID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+	Account                      *ExpenseAccount  `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT" json:"-"`
+	Creator                      *ExpenseUser     `gorm:"foreignKey:CreatedBy;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+}
+
+func (ExpenseStatementIngestion) TableName() string {
+	return QualifiedTable("expense_statement_ingestions")
+}
+
+// ExpenseStatementIngestionRow has its own primary key. A match cannot be the
+// primary key because unmatched rows have no match. Separate partial uniqueness
+// prevents two active rows in one ingestion from claiming the same expense.
+type ExpenseStatementIngestionRow struct {
+	ID                 string                     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	IngestionID        string                     `gorm:"column:ingestion_id;type:uuid;not null;index" json:"ingestionId"`
+	GroupID            string                     `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
+	SourceRowKey       string                     `gorm:"column:source_row_key;type:text;not null" json:"sourceRowKey"`
+	OccurredOn         *string                    `gorm:"column:occurred_on;type:date" json:"occurredOn,omitempty"`
+	Merchant           string                     `gorm:"column:merchant;type:text;not null;default:''" json:"merchant"`
+	Amount             int                        `gorm:"column:amount;not null;default:0;check:amount >= 0" json:"amount"`
+	Currency           string                     `gorm:"column:currency;type:text;not null;default:'SGD'" json:"currency"`
+	ForeignAmount      *int                       `gorm:"column:foreign_amount;check:foreign_amount is null or foreign_amount >= 0" json:"foreignAmount,omitempty"`
+	ForeignCurrency    string                     `gorm:"column:foreign_currency;type:text;not null;default:''" json:"foreignCurrency"`
+	StatementKind      string                     `gorm:"column:statement_kind;type:text;not null;default:'transaction'" json:"statementKind"`
+	Type               string                     `gorm:"column:type;type:text;not null;default:'expense'" json:"type"`
+	Cardholder         string                     `gorm:"column:cardholder;type:text;not null;default:''" json:"cardholder"`
+	StatementReference string                     `gorm:"column:statement_reference;type:text;not null;default:''" json:"statementReference"`
+	AccountID          *string                    `gorm:"column:account_id;type:uuid" json:"accountId,omitempty"`
+	CategoryID         *string                    `gorm:"column:category_id;type:uuid" json:"categoryId,omitempty"`
+	Note               string                     `gorm:"column:note;type:text;not null;default:''" json:"note"`
+	ReviewStatus       string                     `gorm:"column:review_status;type:text;not null;default:'unreviewed';index" json:"reviewStatus"`
+	SuggestedExpenseID *string                    `gorm:"column:suggested_expense_id;type:uuid;index" json:"suggestedExpenseId,omitempty"`
+	MatchConfidence    *float64                   `gorm:"column:match_confidence;type:numeric(4,3)" json:"matchConfidence,omitempty"`
+	MatchExpenseID     *string                    `gorm:"column:match_expense_id;type:uuid;index" json:"matchExpenseId,omitempty"`
+	ConfirmedExpenseID *string                    `gorm:"column:confirmed_expense_id;type:uuid;index" json:"confirmedExpenseId,omitempty"`
+	WarningCodes       []string                   `gorm:"column:warning_codes;type:jsonb;serializer:json;not null;default:'[]'" json:"warningCodes"`
+	ReviewedBy         *string                    `gorm:"column:reviewed_by;type:uuid" json:"reviewedBy,omitempty"`
+	ReviewedAt         *time.Time                 `gorm:"column:reviewed_at" json:"reviewedAt,omitempty"`
+	CreatedAt          time.Time                  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
+	UpdatedAt          time.Time                  `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
+	DeletedAt          *time.Time                 `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
+	Ingestion          *ExpenseStatementIngestion `gorm:"foreignKey:IngestionID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+	Group              *ExpenseGroup              `gorm:"foreignKey:GroupID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+	Account            *ExpenseAccount            `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	Category           *ExpenseCategory           `gorm:"foreignKey:CategoryID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	SuggestedExpense   *ExpenseEntry              `gorm:"foreignKey:SuggestedExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	MatchedExpense     *ExpenseEntry              `gorm:"foreignKey:MatchExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	ConfirmedExpense   *ExpenseEntry              `gorm:"foreignKey:ConfirmedExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	Reviewer           *ExpenseUser               `gorm:"foreignKey:ReviewedBy;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+}
+
+func (ExpenseStatementIngestionRow) TableName() string {
+	return QualifiedTable("expense_statement_ingestion_rows")
 }

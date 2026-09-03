@@ -93,6 +93,12 @@ input[type='color'] {
 	padding: 0.2rem;
 }
 
+/* WebKit gives native date controls an intrinsic minimum width that can exceed a narrow form card. */
+input[type='date'] {
+	max-width: 100%;
+	min-width: 0;
+}
+
 label {
 	color: var(--muted, #596175);
 	display: grid;
@@ -1166,6 +1172,16 @@ form {
 .review-top-transactions {
 	margin: 0 0 1rem;
 	padding-inline: 1rem;
+}
+
+.review-transaction-row {
+	text-align: left;
+	width: 100%;
+}
+
+.review-transaction-row:focus-visible {
+	outline: 2px solid var(--primary);
+	outline-offset: 2px;
 }
 
 @media (max-width: 560px) {

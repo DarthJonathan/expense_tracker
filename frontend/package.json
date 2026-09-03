@@ -7,12 +7,15 @@
 		"dev": "vite --host 0.0.0.0",
 		"build": "vite build",
 		"preview": "vite preview --host 0.0.0.0",
-		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"test": "npm run test:statement",
+		"test:statement": "node scripts/test-statement-parser.mjs"
 	},
 	"dependencies": {
 		"@vite-pwa/sveltekit": "^1.0.1",
 		"bits-ui": "^2.18.1",
-		"lucide-svelte": "^0.468.0"
+		"lucide-svelte": "^0.468.0",
+		"pdfjs-dist": "^4.10.38"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-node": "^5.5.4",

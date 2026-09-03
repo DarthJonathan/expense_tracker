@@ -85,3 +85,18 @@ converted to the user's base currency using the transaction date. The response i
 - Sync is still offline-first: local changes are saved immediately and pushed when online.
 - For shared family/group workflows, records are scoped by `activeGroupId` and merged by `updatedAt`.
 - IDs should be UUIDs to match PostgreSQL UUID columns.
+
+## Private statement ingestion
+
+PDF statements are decoded in the browser with the bundled PDF.js worker. The PDF and extracted page text are checkpointed only in IndexedDB and are never accepted by the statement API. After parsing, the client sends normalized statement controls and transaction rows to the backend for durable review.
+
+The server stores review state in `expense_statement_ingestions` and `expense_statement_ingestion_rows`. It suggests matches against existing transactions, recomputes reconciliation checks after edits, and confirms all reviewed rows in one transaction. Confirmed expenses retain ingestion provenance in `expense_entries.metadata`. Soft-deleting staging data does not delete confirmed expenses.
+
+The migration is additive and idempotent. It creates the new staging tables and indexes without rewriting existing expense data. A PostgreSQL preservation test can be run with:
+
+```bash
+cd backend
+MIGRATION_TEST_DATABASE_URL='postgres://...' go test ./database -run TestMigrateAddsStatementTablesWithoutChangingExistingExpenses
+```
+
+Text-layer PDFs are supported directly. Image-only statements require a deployment-provided on-device OCR worker through `globalThis.__spenditLocalPdfOcr`; there is intentionally no cloud OCR fallback.

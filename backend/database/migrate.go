@@ -39,6 +39,8 @@ func Migrate(db *gorm.DB) error {
 		&dao.ExpenseMerchant{},
 		&dao.ExpenseMerchantCategoryMap{},
 		&dao.ExpenseCategoryRule{},
+		&dao.ExpenseStatementIngestion{},
+		&dao.ExpenseStatementIngestionRow{},
 	); err != nil {
 		return fmt.Errorf("automigrate tables: %w", err)
 	}
@@ -51,6 +53,8 @@ func Migrate(db *gorm.DB) error {
 		"merchantCategoryMaps": dao.QualifiedTable("expense_merchant_category_maps"),
 		"categoryRules":        dao.QualifiedTable("expense_category_rules"),
 		"entries":              dao.QualifiedTable("expense_entries"),
+		"statementIngestions":  dao.QualifiedTable("expense_statement_ingestions"),
+		"statementRows":        dao.QualifiedTable("expense_statement_ingestion_rows"),
 	}
 
 	indexes := []string{
@@ -195,6 +199,56 @@ func Migrate(db *gorm.DB) error {
 			where deleted_at is null`,
 			tables["entries"]),
 		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_statement_ingestions_status_check`, tables["statementIngestions"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_statement_ingestions_status_check
+			check (status in ('parsed', 'matching_review', 'ready', 'confirmed', 'failed', 'deleted'))`, tables["statementIngestions"]),
+		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_statement_ingestion_rows_type_check`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_statement_ingestion_rows_type_check
+			check (type in ('expense', 'income'))`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_statement_ingestion_rows_review_status_check`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_statement_ingestion_rows_review_status_check
+			check (review_status in ('unreviewed', 'new', 'matched', 'ignored'))`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s add column if not exists cardholder_controls jsonb not null default '[]'::jsonb`, tables["statementIngestions"]),
+		fmt.Sprintf(`alter table %s add column if not exists institution text not null default ''`, tables["statementIngestions"]),
+		fmt.Sprintf(`alter table %s add column if not exists client_request_id text not null default ''`, tables["statementIngestions"]),
+		fmt.Sprintf(`alter table %s add column if not exists source_fingerprint text not null default ''`, tables["statementIngestions"]),
+		fmt.Sprintf(`alter table %s add column if not exists statement_date date`, tables["statementIngestions"]),
+		fmt.Sprintf(`alter table %s add column if not exists payment_due_date date`, tables["statementIngestions"]),
+		fmt.Sprintf(`alter table %s add column if not exists foreign_amount integer`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s add column if not exists foreign_currency text not null default ''`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s add column if not exists statement_kind text not null default 'transaction'`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s add column if not exists suggested_expense_id uuid references %s(id) on delete set null`, tables["statementRows"], tables["entries"]),
+		fmt.Sprintf(`alter table %s add column if not exists match_confidence numeric(4,3)`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s drop constraint if exists expense_statement_ingestion_rows_statement_kind_check`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s add constraint expense_statement_ingestion_rows_statement_kind_check
+			check (statement_kind in ('transaction', 'payment', 'fee', 'refund', 'other'))`, tables["statementRows"]),
+		fmt.Sprintf(`create index if not exists expense_statement_ingestions_group_updated_idx
+			on %s (group_id, updated_at desc)
+			where deleted_at is null`, tables["statementIngestions"]),
+		fmt.Sprintf(`create unique index if not exists expense_statement_ingestions_client_request_uidx
+			on %s (group_id, client_request_id)
+			where deleted_at is null and client_request_id <> ''`, tables["statementIngestions"]),
+		fmt.Sprintf(`create unique index if not exists expense_statement_ingestions_fingerprint_uidx
+			on %s (group_id, source_fingerprint)
+			where deleted_at is null and source_fingerprint <> ''`, tables["statementIngestions"]),
+		fmt.Sprintf(`create unique index if not exists expense_statement_ingestion_rows_source_uidx
+			on %s (ingestion_id, source_row_key)
+			where deleted_at is null`, tables["statementRows"]),
+		fmt.Sprintf(`create unique index if not exists expense_statement_ingestion_rows_match_uidx
+			on %s (ingestion_id, match_expense_id)
+			where deleted_at is null and match_expense_id is not null`, tables["statementRows"]),
+		fmt.Sprintf(`create index if not exists expense_statement_ingestion_rows_review_idx
+			on %s (ingestion_id, review_status, occurred_on)
+			where deleted_at is null`, tables["statementRows"]),
+		fmt.Sprintf(`create index if not exists expense_statement_ingestion_rows_suggestion_idx
+			on %s (ingestion_id, suggested_expense_id)
+			where deleted_at is null and suggested_expense_id is not null`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s
 			add column if not exists metadata jsonb not null default '{}'::jsonb`,
 			tables["entries"]),
 		fmt.Sprintf(`alter table %s
@@ -223,6 +277,9 @@ func Migrate(db *gorm.DB) error {
 			set fx_rate_date = coalesce(fx_rate_date, occurred_on, current_date)`,
 		fmt.Sprintf(`alter table %s
 			alter column fx_rate_date set not null`,
+			tables["entries"]),
+		fmt.Sprintf(`alter table %s
+			alter column fx_rate_date set default current_date`,
 			tables["entries"]),
 	}
 

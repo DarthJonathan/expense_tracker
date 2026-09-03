@@ -7,14 +7,23 @@ import type {
 	FinanceState,
 	Group,
 	LedgerEntry,
+	LocalStatementJob,
 	Merchant
 } from './types';
 import { isoNow, makeId } from './utils';
 
-type StoreName = 'settings' | 'groups' | 'accounts' | 'categories' | 'entries' | 'adjustments' | 'merchants';
+type StoreName =
+	| 'settings'
+	| 'groups'
+	| 'accounts'
+	| 'categories'
+	| 'entries'
+	| 'adjustments'
+	| 'merchants'
+	| 'statementLocalJobs';
 
 const DB_NAME = 'shared-expense-tracker';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBDatabase> | undefined;
 
@@ -26,7 +35,16 @@ function openDb(): Promise<IDBDatabase> {
 
 		request.onupgradeneeded = () => {
 			const db = request.result;
-			for (const storeName of ['settings', 'groups', 'accounts', 'categories', 'entries', 'adjustments', 'merchants']) {
+			for (const storeName of [
+				'settings',
+				'groups',
+				'accounts',
+				'categories',
+				'entries',
+				'adjustments',
+				'merchants',
+				'statementLocalJobs'
+			]) {
 				if (!db.objectStoreNames.contains(storeName)) {
 					db.createObjectStore(storeName, { keyPath: 'id' });
 				}
@@ -75,6 +93,23 @@ export async function putMany<T extends { id: string }>(storeName: StoreName, re
 		transaction.oncomplete = () => resolve();
 		transaction.onerror = () => reject(transaction.error);
 	});
+}
+
+export async function deleteRecord(storeName: StoreName, id: string): Promise<void> {
+	await tx<undefined>(storeName, 'readwrite', (store) => store.delete(id));
+}
+
+export async function getLocalStatementJobs(groupId: string): Promise<LocalStatementJob[]> {
+	const jobs = await getAll<LocalStatementJob>('statementLocalJobs');
+	return jobs.filter((job) => job.groupId === groupId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function putLocalStatementJob(job: LocalStatementJob): Promise<void> {
+	await putRecord('statementLocalJobs', job);
+}
+
+export async function deleteLocalStatementJob(id: string): Promise<void> {
+	await deleteRecord('statementLocalJobs', id);
 }
 
 export async function patchSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
