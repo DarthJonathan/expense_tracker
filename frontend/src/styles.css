@@ -1422,6 +1422,57 @@ form {
 	--panel-hover: rgba(244, 244, 245, 0.14);
 }
 
+/* The statement workspace follows the reviewed navy/blue design without
+   changing the appearance of the rest of the app. */
+:root[data-theme='dark'] .desktop-app.statement-mode,
+:root[data-theme='dark'] .statement-screen {
+	--ink: #f3f5fa;
+	--paper: #0f131c;
+	--panel: #1b222e;
+	--field: #141b26;
+	--line: #303948;
+	--muted: #a1aaba;
+	--primary: #6794ff;
+	--primary-pressed: #4b7cef;
+	--panel-hover: rgba(103, 148, 255, 0.08);
+}
+
+.statement-settings-back {
+	background: transparent;
+	color: var(--muted);
+	gap: 0.5rem;
+	justify-content: flex-start;
+	justify-self: start;
+	min-height: 2.5rem;
+	padding: 0;
+}
+
+.statement-settings-back:focus-visible {
+	outline: 2px solid var(--primary);
+	outline-offset: 4px;
+}
+
+@media (min-width: 768px) {
+	.desktop-app.statement-mode .desktop-main {
+		padding: clamp(1.5rem, 3vw, 3rem);
+	}
+	.desktop-statement-page {
+		min-width: 0;
+		width: 100%;
+		max-width: 1440px;
+		margin-inline: auto;
+	}
+	:root[data-theme='dark'] .desktop-app.statement-mode .desktop-sidebar {
+		background: #090c12;
+		border-right-color: transparent;
+	}
+	.desktop-app.statement-mode .brand-mark span {
+		background: var(--primary);
+		border-radius: 14px;
+		color: #0c1833;
+	}
+}
+
 body {
 	background: var(--paper);
 	color: var(--ink);

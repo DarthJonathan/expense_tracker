@@ -1,9 +1,11 @@
 <script lang="ts">
 	import {
+		ArrowLeft,
 		BarChart3,
 		ChevronDown,
 		ClipboardList,
 		CreditCard,
+		FileScan,
 		Home,
 		Moon,
 		Plus,
@@ -2379,7 +2381,8 @@ function getEntryCategoryOptions(
 			{/if}
 		</section>
 	{:else}
-		<section class="screen settings-screen">
+		<section class="screen settings-screen" class:statement-screen={settingsSubpage === 'statements'}>
+			{#if settingsSubpage !== 'statements'}
 			<header class="screen-header">
 				<span class="header-spacer"></span>
 				<h1>Settings</h1>
@@ -2387,6 +2390,7 @@ function getEntryCategoryOptions(
 					{#if isOnline}<Wifi size={16} />{:else}<WifiOff size={16} />{/if}
 				</span>
 			</header>
+			{/if}
 
 			{#if settingsSubpage === 'overview'}
 				<div class="quick-menu">
@@ -2470,10 +2474,7 @@ function getEntryCategoryOptions(
 				</form>
 			{:else if settingsSubpage === 'statements'}
 				<section class="settings-list">
-					<div class="settings-subpage-heading">
-						<h2>Statement imports</h2>
-						<button class="ghost" type="button" on:click={() => openSettingsSubpage('overview')}>Back to settings</button>
-					</div>
+					<button class="statement-settings-back" type="button" on:click={() => openSettingsSubpage('overview')}><ArrowLeft size={17} /> Settings</button>
 					{#if activeGroup}
 						<StatementIngestion groupId={activeGroup.id} {accounts} {categories} entries={entries} onConfirmed={() => finance.syncNow()} />
 					{/if}
@@ -2775,7 +2776,7 @@ function getEntryCategoryOptions(
 	</div>
 {/if}
 
-<main class="desktop-app">
+<main class="desktop-app" class:statement-mode={desktopScreen === 'statements'}>
 	<aside class="desktop-sidebar">
 		<div class="brand-mark">
 			<span>F</span>
@@ -2792,14 +2793,14 @@ function getEntryCategoryOptions(
 			>
 				<ClipboardList size={18} /> Transactions
 			</a>
+			<a href="#statements" class:active={desktopScreen === 'statements'} on:click|preventDefault={() => (desktopScreen = 'statements')}>
+				<FileScan size={18} /> Statements
+			</a>
 			<a href="#wallet" class:active={desktopScreen === 'accounts'} on:click|preventDefault={() => (desktopScreen = 'accounts')}>
 				<CreditCard size={18} /> Accounts
 			</a>
 			<a href="#review" class:active={desktopScreen === 'review'} on:click|preventDefault={() => (desktopScreen = 'review')}>
 				<BarChart3 size={18} /> Review
-			</a>
-			<a href="#statements" class:active={desktopScreen === 'statements'} on:click|preventDefault={() => (desktopScreen = 'statements')}>
-				<ClipboardList size={18} /> Statement imports
 			</a>
 			<a href="#settings" class:active={desktopScreen === 'settings'} on:click|preventDefault={() => (desktopScreen = 'settings')}>
 				<Settings size={18} /> Settings
@@ -2820,6 +2821,7 @@ function getEntryCategoryOptions(
 	</aside>
 
 	<section class="desktop-main" id="dashboard">
+		{#if desktopScreen !== 'statements'}
 		<header class="desktop-topbar">
 			<div>
 				<h1>{desktopHeading.title}</h1>
@@ -2870,6 +2872,7 @@ function getEntryCategoryOptions(
 					{/if}
 				</div>
 			</header>
+		{/if}
 
 			{#if desktopScreen === 'dashboard'}
 			<div class="desktop-filter-row">
@@ -3816,7 +3819,7 @@ function getEntryCategoryOptions(
 					</form>
 				</section>
 			{:else if desktopScreen === 'statements'}
-				<section class="desktop-card desktop-page-card">
+				<section class="desktop-statement-page">
 					{#if activeGroup}
 						<StatementIngestion groupId={activeGroup.id} {accounts} {categories} entries={entries} onConfirmed={() => finance.syncNow()} />
 					{/if}
