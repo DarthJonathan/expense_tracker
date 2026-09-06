@@ -184,6 +184,8 @@ create table if not exists spendit.expense_statement_ingestion_rows (
 	suggested_expense_id uuid references spendit.expense_entries(id) on delete set null,
 	match_confidence numeric(4,3),
 	match_expense_id uuid references spendit.expense_entries(id) on delete set null,
+	combined_match_id uuid,
+	combined_transaction jsonb,
 	confirmed_expense_id uuid references spendit.expense_entries(id) on delete set null,
 	warning_codes jsonb not null default '[]'::jsonb,
 	reviewed_by uuid references spendit.expense_users(id) on delete set null,
@@ -242,9 +244,15 @@ create unique index if not exists expense_statement_ingestion_rows_source_uidx
 on spendit.expense_statement_ingestion_rows (ingestion_id, source_row_key)
 where deleted_at is null;
 
-create unique index if not exists expense_statement_ingestion_rows_match_uidx
+-- Ordinary matches remain one-to-one. Rows intentionally grouped with a
+-- combined_match_id are allowed to share the selected master transaction.
+create unique index if not exists expense_statement_ingestion_rows_single_match_uidx
 on spendit.expense_statement_ingestion_rows (ingestion_id, match_expense_id)
-where deleted_at is null and match_expense_id is not null;
+where deleted_at is null and match_expense_id is not null and combined_match_id is null;
+
+create index if not exists expense_statement_ingestion_rows_combined_match_idx
+on spendit.expense_statement_ingestion_rows (ingestion_id, combined_match_id)
+where deleted_at is null and combined_match_id is not null;
 
 create index if not exists expense_statement_ingestion_rows_review_idx
 on spendit.expense_statement_ingestion_rows (ingestion_id, review_status, occurred_on)

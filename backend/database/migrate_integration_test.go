@@ -76,4 +76,18 @@ func TestMigrateAddsStatementTablesWithoutChangingExistingExpenses(t *testing.T)
 	if statementTableCount != 2 {
 		t.Fatalf("statement tables created = %d, want 2", statementTableCount)
 	}
+	var combinedMatchColumnCount int64
+	if err := db.Raw(`select count(*) from information_schema.columns where table_schema = ? and table_name = 'expense_statement_ingestion_rows' and column_name = 'combined_match_id' and is_nullable = 'YES'`, schema).Scan(&combinedMatchColumnCount).Error; err != nil {
+		t.Fatalf("verify combined match column: %v", err)
+	}
+	if combinedMatchColumnCount != 1 {
+		t.Fatalf("combined match columns = %d, want 1 nullable column", combinedMatchColumnCount)
+	}
+	var combinedMatchIndexCount int64
+	if err := db.Raw(`select count(*) from pg_indexes where schemaname = ? and tablename = 'expense_statement_ingestion_rows' and indexname in ('expense_statement_ingestion_rows_single_match_uidx', 'expense_statement_ingestion_rows_combined_match_idx')`, schema).Scan(&combinedMatchIndexCount).Error; err != nil {
+		t.Fatalf("verify combined match indexes: %v", err)
+	}
+	if combinedMatchIndexCount != 2 {
+		t.Fatalf("combined match indexes = %d, want 2", combinedMatchIndexCount)
+	}
 }

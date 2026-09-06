@@ -8,8 +8,9 @@
 		"build": "vite build",
 		"preview": "vite preview --host 0.0.0.0",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"test": "npm run test:statement",
-		"test:statement": "node scripts/test-statement-parser.mjs"
+		"test": "npm run test:statement && npm run test:statement-review",
+		"test:statement": "node scripts/test-statement-parser.mjs",
+		"test:statement-review": "node scripts/test-statement-review.mjs"
 	},
 	"dependencies": {
 		"@vite-pwa/sveltekit": "^1.0.1",

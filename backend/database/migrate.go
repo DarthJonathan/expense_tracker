@@ -224,6 +224,8 @@ func Migrate(db *gorm.DB) error {
 		fmt.Sprintf(`alter table %s add column if not exists statement_kind text not null default 'transaction'`, tables["statementRows"]),
 		fmt.Sprintf(`alter table %s add column if not exists suggested_expense_id uuid references %s(id) on delete set null`, tables["statementRows"], tables["entries"]),
 		fmt.Sprintf(`alter table %s add column if not exists match_confidence numeric(4,3)`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s add column if not exists combined_match_id uuid`, tables["statementRows"]),
+		fmt.Sprintf(`alter table %s add column if not exists combined_transaction jsonb`, tables["statementRows"]),
 		fmt.Sprintf(`alter table %s drop constraint if exists expense_statement_ingestion_rows_statement_kind_check`, tables["statementRows"]),
 		fmt.Sprintf(`alter table %s add constraint expense_statement_ingestion_rows_statement_kind_check
 			check (statement_kind in ('transaction', 'payment', 'fee', 'refund', 'other'))`, tables["statementRows"]),
@@ -239,9 +241,16 @@ func Migrate(db *gorm.DB) error {
 		fmt.Sprintf(`create unique index if not exists expense_statement_ingestion_rows_source_uidx
 			on %s (ingestion_id, source_row_key)
 			where deleted_at is null`, tables["statementRows"]),
-		fmt.Sprintf(`create unique index if not exists expense_statement_ingestion_rows_match_uidx
+		// The legacy index allowed no duplicate match IDs at all. Drop it once;
+		// the new name is stable so this migration does not rebuild the active
+		// partial unique index on every application startup.
+		fmt.Sprintf(`drop index if exists %s`, quoteIdentifier(dao.Schema())+`.expense_statement_ingestion_rows_match_uidx`),
+		fmt.Sprintf(`create unique index if not exists expense_statement_ingestion_rows_single_match_uidx
 			on %s (ingestion_id, match_expense_id)
-			where deleted_at is null and match_expense_id is not null`, tables["statementRows"]),
+			where deleted_at is null and match_expense_id is not null and combined_match_id is null`, tables["statementRows"]),
+		fmt.Sprintf(`create index if not exists expense_statement_ingestion_rows_combined_match_idx
+			on %s (ingestion_id, combined_match_id)
+			where deleted_at is null and combined_match_id is not null`, tables["statementRows"]),
 		fmt.Sprintf(`create index if not exists expense_statement_ingestion_rows_review_idx
 			on %s (ingestion_id, review_status, occurred_on)
 			where deleted_at is null`, tables["statementRows"]),

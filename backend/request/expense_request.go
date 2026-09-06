@@ -143,3 +143,18 @@ type UpdateStatementIngestionRowRequest struct {
 	MatchExpenseID  *string   `json:"matchExpenseId,omitempty"`
 	WarningCodes    *[]string `json:"warningCodes,omitempty"`
 }
+
+// CreateCombinedStatementMatchRequest intentionally takes row IDs rather than
+// OCR values, keeping the original normalized ingestion rows as the audit trail.
+type CreateCombinedStatementMatchRequest struct {
+	RowIDs         []string `json:"rowIds"`
+	MatchExpenseID string   `json:"matchExpenseId"`
+	NewTransaction *CombinedStatementTransactionRequest `json:"newTransaction,omitempty"`
+}
+
+type CombinedStatementTransactionRequest struct {
+	Merchant string `json:"merchant"`
+	OccurredOn string `json:"occurredOn"`
+	CategoryID string `json:"categoryId"`
+	Note string `json:"note"`
+}

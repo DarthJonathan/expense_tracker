@@ -78,6 +78,7 @@
 	let mobileTransactionCategoryId = '';
 	let mobileTransactionPeriodKey = todayInputValue().slice(0, 7);
 	let mobileTransactionGrain: PeriodGrain = 'month';
+	let mobileTransactionViewFilter: TransactionViewFilter = 'all';
 	let mobileTransactionsScrollTop = 0;
 	let restoreMobileTransactionsScroll = false;
 	let remoteSearchResults: LedgerEntry[] | null = null;
@@ -386,19 +387,24 @@
 	$: transactionSearchQueryNormalized = normalizeMerchantText(transactionSearchQuery);
 	$: filteredTransactions = filterTransactions(allTransactions, transactionSearchQueryNormalized, transactionSearchMonthsBack);
 	$: desktopFilteredTransactions = filterTransactions(desktopViewTransactions, transactionSearchQueryNormalized, 'all');
-	$: mobileTransactions = mobileTransactionPeriodKey
+	$: mobilePeriodTransactions = mobileTransactionPeriodKey
 		? allTransactions.filter(
 				(entry) =>
 					(!mobileTransactionCategoryId || entry.categoryId === mobileTransactionCategoryId) &&
 					periodKey(entry.occurredOn, mobileTransactionGrain) === mobileTransactionPeriodKey
 			)
 		: allTransactions;
+	$: mobileTransactions = filterTransactionsByView(mobilePeriodTransactions, mobileTransactionViewFilter);
 	$: mobileTransactionCategory = allCategories.find((category) => category.id === mobileTransactionCategoryId);
 	$: mobileTransactionPeriodLabel = mobileTransactionPeriodKey
 		? readablePeriod(mobileTransactionPeriodKey, mobileTransactionGrain)
 		: 'All time';
 	$: mobileTransactionFilterLabel =
 		mobileTransactionCategory ? `${mobileTransactionCategory.name} · ${mobileTransactionPeriodLabel}` : mobileTransactionPeriodLabel;
+	$: selectedMobileTransactionViewLabel =
+		transactionViewFilterOptions.find((option) => option.value === mobileTransactionViewFilter)?.label ?? 'All transactions';
+	$: mobileTransactionEmptyLabel =
+		mobileTransactionViewFilter === 'all' ? 'transactions' : selectedMobileTransactionViewLabel.toLowerCase();
 	$: searchPageResults = remoteSearchResults ?? filteredTransactions;
 	$: topCategories = (currentSummary?.categories ?? []).filter((item) => Math.abs(item.net) > 0).slice(0, 4);
 	$: homeTiles = topCategories.length
@@ -885,6 +891,7 @@
 		mobileTransactionCategoryId = '';
 		mobileTransactionPeriodKey = currentMonthKey;
 		mobileTransactionGrain = 'month';
+		mobileTransactionViewFilter = 'all';
 		activeScreen = 'transactions';
 	}
 
@@ -892,6 +899,7 @@
 		mobileTransactionCategoryId = categoryId;
 		mobileTransactionPeriodKey = currentSummary?.periodKey ?? periodKey(todayInputValue(), grain);
 		mobileTransactionGrain = grain;
+		mobileTransactionViewFilter = 'all';
 		activeScreen = 'transactions';
 	}
 
@@ -899,6 +907,7 @@
 		mobileTransactionCategoryId = '';
 		mobileTransactionPeriodKey = selectedReviewPeriodKey || currentMonthKey;
 		mobileTransactionGrain = grain;
+		mobileTransactionViewFilter = 'all';
 		activeScreen = 'transactions';
 	}
 
@@ -2143,14 +2152,22 @@ function getEntryCategoryOptions(
 			</header>
 
 			<section class="transaction-table-card">
-				{#if mobileTransactionFilterLabel}
-					<div class="mobile-transaction-filter">
-						<span>{mobileTransactionFilterLabel}</span>
-						{#if mobileTransactionCategoryId}
-							<button type="button" on:click={clearMobileTransactionFilter} aria-label="Clear category filter">×</button>
-						{/if}
-					</div>
-				{/if}
+				<div class="mobile-transaction-controls">
+					{#if mobileTransactionFilterLabel}
+						<div class="mobile-transaction-filter">
+							<span>{mobileTransactionFilterLabel}</span>
+							{#if mobileTransactionCategoryId}
+								<button type="button" on:click={clearMobileTransactionFilter} aria-label="Clear category filter">×</button>
+							{/if}
+						</div>
+					{/if}
+					<AppSelect
+						ariaLabel="Filter transactions"
+						bind:value={mobileTransactionViewFilter}
+						options={transactionViewFilterOptions}
+						triggerClass="mobile-transaction-view-trigger"
+					/>
+				</div>
 				<div class="transaction-table-head">
 					<span>Date</span>
 					<span>Merchant</span>
@@ -2182,8 +2199,8 @@ function getEntryCategoryOptions(
 					{:else}
 						<p class="empty-card">
 							{mobileTransactionCategoryId
-								? `No transactions for ${mobileTransactionFilterLabel}.`
-								: `No transactions in ${mobileTransactionPeriodLabel}.`}
+								? `No ${mobileTransactionEmptyLabel} for ${mobileTransactionFilterLabel}.`
+								: `No ${mobileTransactionEmptyLabel} in ${mobileTransactionPeriodLabel}.`}
 						</p>
 					{/each}
 				</div>
@@ -3180,7 +3197,6 @@ function getEntryCategoryOptions(
 								{desktopFilteredTransactions.length === 1 ? 'transaction' : 'transactions'}
 							</p>
 						</div>
-						<button type="button" on:click={() => (desktopScreen = 'add')}><Plus size={17} /> Add transaction</button>
 					</div>
 					<div class="desktop-transaction-period-controls" aria-label="Transaction period">
 						<span>Show by</span>

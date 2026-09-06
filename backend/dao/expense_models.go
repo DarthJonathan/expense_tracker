@@ -183,27 +183,31 @@ func (ExpenseStatementIngestion) TableName() string {
 // primary key because unmatched rows have no match. Separate partial uniqueness
 // prevents two active rows in one ingestion from claiming the same expense.
 type ExpenseStatementIngestionRow struct {
-	ID                 string                     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
-	IngestionID        string                     `gorm:"column:ingestion_id;type:uuid;not null;index" json:"ingestionId"`
-	GroupID            string                     `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
-	SourceRowKey       string                     `gorm:"column:source_row_key;type:text;not null" json:"sourceRowKey"`
-	OccurredOn         *string                    `gorm:"column:occurred_on;type:date" json:"occurredOn,omitempty"`
-	Merchant           string                     `gorm:"column:merchant;type:text;not null;default:''" json:"merchant"`
-	Amount             int                        `gorm:"column:amount;not null;default:0;check:amount >= 0" json:"amount"`
-	Currency           string                     `gorm:"column:currency;type:text;not null;default:'SGD'" json:"currency"`
-	ForeignAmount      *int                       `gorm:"column:foreign_amount;check:foreign_amount is null or foreign_amount >= 0" json:"foreignAmount,omitempty"`
-	ForeignCurrency    string                     `gorm:"column:foreign_currency;type:text;not null;default:''" json:"foreignCurrency"`
-	StatementKind      string                     `gorm:"column:statement_kind;type:text;not null;default:'transaction'" json:"statementKind"`
-	Type               string                     `gorm:"column:type;type:text;not null;default:'expense'" json:"type"`
-	Cardholder         string                     `gorm:"column:cardholder;type:text;not null;default:''" json:"cardholder"`
-	StatementReference string                     `gorm:"column:statement_reference;type:text;not null;default:''" json:"statementReference"`
-	AccountID          *string                    `gorm:"column:account_id;type:uuid" json:"accountId,omitempty"`
-	CategoryID         *string                    `gorm:"column:category_id;type:uuid" json:"categoryId,omitempty"`
-	Note               string                     `gorm:"column:note;type:text;not null;default:''" json:"note"`
-	ReviewStatus       string                     `gorm:"column:review_status;type:text;not null;default:'unreviewed';index" json:"reviewStatus"`
-	SuggestedExpenseID *string                    `gorm:"column:suggested_expense_id;type:uuid;index" json:"suggestedExpenseId,omitempty"`
-	MatchConfidence    *float64                   `gorm:"column:match_confidence;type:numeric(4,3)" json:"matchConfidence,omitempty"`
-	MatchExpenseID     *string                    `gorm:"column:match_expense_id;type:uuid;index" json:"matchExpenseId,omitempty"`
+	ID                 string   `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	IngestionID        string   `gorm:"column:ingestion_id;type:uuid;not null;index" json:"ingestionId"`
+	GroupID            string   `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
+	SourceRowKey       string   `gorm:"column:source_row_key;type:text;not null" json:"sourceRowKey"`
+	OccurredOn         *string  `gorm:"column:occurred_on;type:date" json:"occurredOn,omitempty"`
+	Merchant           string   `gorm:"column:merchant;type:text;not null;default:''" json:"merchant"`
+	Amount             int      `gorm:"column:amount;not null;default:0;check:amount >= 0" json:"amount"`
+	Currency           string   `gorm:"column:currency;type:text;not null;default:'SGD'" json:"currency"`
+	ForeignAmount      *int     `gorm:"column:foreign_amount;check:foreign_amount is null or foreign_amount >= 0" json:"foreignAmount,omitempty"`
+	ForeignCurrency    string   `gorm:"column:foreign_currency;type:text;not null;default:''" json:"foreignCurrency"`
+	StatementKind      string   `gorm:"column:statement_kind;type:text;not null;default:'transaction'" json:"statementKind"`
+	Type               string   `gorm:"column:type;type:text;not null;default:'expense'" json:"type"`
+	Cardholder         string   `gorm:"column:cardholder;type:text;not null;default:''" json:"cardholder"`
+	StatementReference string   `gorm:"column:statement_reference;type:text;not null;default:''" json:"statementReference"`
+	AccountID          *string  `gorm:"column:account_id;type:uuid" json:"accountId,omitempty"`
+	CategoryID         *string  `gorm:"column:category_id;type:uuid" json:"categoryId,omitempty"`
+	Note               string   `gorm:"column:note;type:text;not null;default:''" json:"note"`
+	ReviewStatus       string   `gorm:"column:review_status;type:text;not null;default:'unreviewed';index" json:"reviewStatus"`
+	SuggestedExpenseID *string  `gorm:"column:suggested_expense_id;type:uuid;index" json:"suggestedExpenseId,omitempty"`
+	MatchConfidence    *float64 `gorm:"column:match_confidence;type:numeric(4,3)" json:"matchConfidence,omitempty"`
+	MatchExpenseID     *string  `gorm:"column:match_expense_id;type:uuid;index" json:"matchExpenseId,omitempty"`
+	// CombinedMatchID links source rows for one create or update on confirmation.
+	// CombinedTransaction is optional; nil preserves the legacy match behavior.
+	CombinedTransaction *CombinedStatementTransaction `gorm:"column:combined_transaction;type:jsonb;serializer:json" json:"combinedTransaction,omitempty"`
+	CombinedMatchID    *string                    `gorm:"column:combined_match_id;type:uuid" json:"combinedMatchId,omitempty"`
 	ConfirmedExpenseID *string                    `gorm:"column:confirmed_expense_id;type:uuid;index" json:"confirmedExpenseId,omitempty"`
 	WarningCodes       []string                   `gorm:"column:warning_codes;type:jsonb;serializer:json;not null;default:'[]'" json:"warningCodes"`
 	ReviewedBy         *string                    `gorm:"column:reviewed_by;type:uuid" json:"reviewedBy,omitempty"`
@@ -219,6 +223,13 @@ type ExpenseStatementIngestionRow struct {
 	MatchedExpense     *ExpenseEntry              `gorm:"foreignKey:MatchExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
 	ConfirmedExpense   *ExpenseEntry              `gorm:"foreignKey:ConfirmedExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
 	Reviewer           *ExpenseUser               `gorm:"foreignKey:ReviewedBy;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+}
+
+type CombinedStatementTransaction struct {
+	Merchant   string `json:"merchant"`
+	OccurredOn string `json:"occurredOn"`
+	CategoryID string `json:"categoryId"`
+	Note       string `json:"note"`
 }
 
 func (ExpenseStatementIngestionRow) TableName() string {

@@ -160,6 +160,8 @@ export interface StatementIngestionRow {
 	suggestedExpenseId?: string | null;
 	matchConfidence?: number | null;
 	matchExpenseId?: string | null;
+	combinedMatchId?: string | null;
+	combinedTransaction?: CombinedStatementTransaction | null;
 	confirmedExpenseId?: string | null;
 	warningCodes: string[];
 	reviewedBy?: string | null;
@@ -167,6 +169,13 @@ export interface StatementIngestionRow {
 	createdAt: string;
 	updatedAt: string;
 	deletedAt?: string | null;
+}
+
+export interface CombinedStatementTransaction {
+	merchant: string;
+	occurredOn: string;
+	categoryId: string;
+	note: string;
 }
 
 export interface StatementIngestionDetail {

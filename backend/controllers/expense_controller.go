@@ -578,6 +578,68 @@ func (c *ExpenseController) UpdateStatementIngestionRowV1(w http.ResponseWriter,
 	c.writeJSON(w, http.StatusOK, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: true}, Data: detail})
 }
 
+func (c *ExpenseController) DeleteStatementIngestionRowV1(w http.ResponseWriter, r *http.Request) {
+	groupID, userID, ok := c.statementRequestScope(w, r)
+	if !ok {
+		return
+	}
+	vars := mux.Vars(r)
+	ingestionID, rowID := strings.TrimSpace(vars["ingestionId"]), strings.TrimSpace(vars["rowId"])
+	if ingestionID == "" || rowID == "" {
+		c.writeStatementError(w, http.StatusBadRequest, "ingestionId and rowId are required")
+		return
+	}
+	detail, err := c.Service.DeleteStatementIngestionRow(r.Context(), groupID, ingestionID, rowID, userID)
+	if err != nil {
+		c.writeStatementError(w, errorStatus(err), err.Error())
+		return
+	}
+	c.writeJSON(w, http.StatusOK, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: true}, Data: detail})
+}
+
+func (c *ExpenseController) CreateCombinedStatementMatchV1(w http.ResponseWriter, r *http.Request) {
+	groupID, userID, ok := c.statementRequestScope(w, r)
+	if !ok {
+		return
+	}
+	ingestionID := strings.TrimSpace(mux.Vars(r)["ingestionId"])
+	if ingestionID == "" {
+		c.writeStatementError(w, http.StatusBadRequest, "ingestionId is required")
+		return
+	}
+	req := &request.CreateCombinedStatementMatchRequest{}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := c.decodeStrictJSON(req, r); err != nil {
+		c.writeStatementError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	detail, err := c.Service.CreateCombinedStatementMatch(r.Context(), groupID, ingestionID, userID, req)
+	if err != nil {
+		c.writeStatementError(w, errorStatus(err), err.Error())
+		return
+	}
+	c.writeJSON(w, http.StatusOK, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: true}, Data: detail})
+}
+
+func (c *ExpenseController) DissolveCombinedStatementMatchV1(w http.ResponseWriter, r *http.Request) {
+	groupID, userID, ok := c.statementRequestScope(w, r)
+	if !ok {
+		return
+	}
+	vars := mux.Vars(r)
+	ingestionID, combinedMatchID := strings.TrimSpace(vars["ingestionId"]), strings.TrimSpace(vars["combinedMatchId"])
+	if ingestionID == "" || combinedMatchID == "" {
+		c.writeStatementError(w, http.StatusBadRequest, "ingestionId and combinedMatchId are required")
+		return
+	}
+	detail, err := c.Service.DissolveCombinedStatementMatch(r.Context(), groupID, ingestionID, combinedMatchID, userID)
+	if err != nil {
+		c.writeStatementError(w, errorStatus(err), err.Error())
+		return
+	}
+	c.writeJSON(w, http.StatusOK, response.StatementIngestionResponse{BaseResponse: response.BaseResponse{Success: true}, Data: detail})
+}
+
 func (c *ExpenseController) ConfirmStatementIngestionV1(w http.ResponseWriter, r *http.Request) {
 	groupID, userID, ok := c.statementRequestScope(w, r)
 	if !ok {

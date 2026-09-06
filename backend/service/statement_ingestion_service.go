@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -249,6 +250,9 @@ func (s *ExpenseService) UpdateStatementIngestionRow(ctx context.Context, groupI
 	if row == nil {
 		return nil, fmt.Errorf("statement row not found")
 	}
+	if strings.TrimSpace(derefString(row.CombinedMatchID)) != "" {
+		return nil, fmt.Errorf("combined statement rows must be uncombined before editing")
+	}
 	next := *row
 	if req.OccurredOn != nil {
 		value, err := optionalStatementDate(*req.OccurredOn)
@@ -377,6 +381,18 @@ func (s *ExpenseService) UpdateStatementIngestionRow(ctx context.Context, groupI
 		if lockedStatus == statementStatusConfirmed {
 			return fmt.Errorf("confirmed statement ingestion cannot be edited")
 		}
+		var combinedMatchID string
+		if err := tx.Raw(fmt.Sprintf(`select coalesce(combined_match_id::text, '') from %s where id = ?::uuid and ingestion_id = ?::uuid and group_id = ?::uuid and deleted_at is null for update`, dao.QualifiedTable("expense_statement_ingestion_rows")), rowID, ingestionID, groupID).Scan(&combinedMatchID).Error; err != nil {
+			return err
+		}
+		if strings.TrimSpace(combinedMatchID) != "" {
+			return fmt.Errorf("combined statement rows must be uncombined before editing")
+		}
+		if next.ReviewStatus == "matched" {
+			if err := ensureNoDuplicateStatementMatchTx(tx, groupID, ingestionID, rowID, derefString(next.MatchExpenseID)); err != nil {
+				return err
+			}
+		}
 		result := tx.Table((dao.ExpenseStatementIngestionRow{}).TableName()).
 			Where("id = ?::uuid and ingestion_id = ?::uuid and group_id = ?::uuid and updated_at = ? and deleted_at is null", rowID, ingestionID, groupID, row.UpdatedAt).
 			Updates(map[string]any{
@@ -402,6 +418,247 @@ func (s *ExpenseService) UpdateStatementIngestionRow(ctx context.Context, groupI
 		}
 		if ingestionResult.RowsAffected != 1 {
 			return fmt.Errorf("statement ingestion changed during review; reload and retry")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return s.getStatementIngestion(ctx, groupID, ingestionID, false)
+}
+
+// DeleteStatementIngestionRow removes one active staging row without touching
+// any master transaction. The row remains soft-deleted for audit and recovery.
+func (s *ExpenseService) DeleteStatementIngestionRow(ctx context.Context, groupID, ingestionID, rowID, userID string) (*response.StatementIngestionDetail, error) {
+	if err := s.ensureStatementGroupAccess(ctx, groupID, userID); err != nil {
+		return nil, err
+	}
+	detail, err := s.getStatementIngestion(ctx, groupID, ingestionID, false)
+	if err != nil {
+		return nil, err
+	}
+	if detail.Ingestion.Status == statementStatusConfirmed {
+		return nil, fmt.Errorf("confirmed statement ingestion cannot be edited")
+	}
+	row := findStatementIngestionRow(detail.Rows, rowID)
+	if row == nil {
+		return nil, fmt.Errorf("statement row not found")
+	}
+	if strings.TrimSpace(derefString(row.CombinedMatchID)) != "" {
+		return nil, fmt.Errorf("combined statement rows must be uncombined before deleting")
+	}
+	nextRows := make([]dao.ExpenseStatementIngestionRow, 0, len(detail.Rows)-1)
+	for _, candidate := range detail.Rows {
+		if candidate.ID != row.ID {
+			nextRows = append(nextRows, candidate)
+		}
+	}
+	validation := buildStatementValidation(nextRows, detail.Ingestion.StatementCurrency, detail.Ingestion.PreviousBalance, detail.Ingestion.DeclaredNewTransactionsTotal, detail.Ingestion.StatementGrandTotal, detail.Ingestion.CardholderControls)
+	status := statementIngestionStatus(nextRows, "", dao.ExpenseStatementIngestionRow{})
+	now := time.Now().UTC()
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lockedStatus string
+		if err := tx.Raw(fmt.Sprintf(`select status from %s where id = ?::uuid and group_id = ?::uuid and deleted_at is null for update`, dao.QualifiedTable("expense_statement_ingestions")), ingestionID, groupID).Scan(&lockedStatus).Error; err != nil {
+			return err
+		}
+		if lockedStatus == "" {
+			return fmt.Errorf("statement ingestion not found")
+		}
+		if lockedStatus == statementStatusConfirmed {
+			return fmt.Errorf("confirmed statement ingestion cannot be edited")
+		}
+		var combinedMatchID string
+		if err := tx.Raw(fmt.Sprintf(`select coalesce(combined_match_id::text, '') from %s where id = ?::uuid and ingestion_id = ?::uuid and group_id = ?::uuid and deleted_at is null for update`, dao.QualifiedTable("expense_statement_ingestion_rows")), rowID, ingestionID, groupID).Scan(&combinedMatchID).Error; err != nil {
+			return err
+		}
+		if strings.TrimSpace(combinedMatchID) != "" {
+			return fmt.Errorf("combined statement rows must be uncombined before deleting")
+		}
+		rowResult := tx.Table((dao.ExpenseStatementIngestionRow{}).TableName()).
+			Where("id = ?::uuid and ingestion_id = ?::uuid and group_id = ?::uuid and updated_at = ? and deleted_at is null", rowID, ingestionID, groupID, row.UpdatedAt).
+			Updates(map[string]any{"deleted_at": now, "reviewed_by": stringPointer(userID), "reviewed_at": now, "updated_at": now})
+		if rowResult.Error != nil {
+			return rowResult.Error
+		}
+		if rowResult.RowsAffected != 1 {
+			return fmt.Errorf("statement row changed during review; reload and retry")
+		}
+		ingestionResult := tx.Table((dao.ExpenseStatementIngestion{}).TableName()).
+			Where("id = ?::uuid and group_id = ?::uuid and updated_at = ? and deleted_at is null", ingestionID, groupID, detail.Ingestion.UpdatedAt).
+			Updates(map[string]any{"status": status, "parsed_row_count": len(nextRows), "validation": validation, "updated_at": now})
+		if ingestionResult.Error != nil {
+			return ingestionResult.Error
+		}
+		if ingestionResult.RowsAffected != 1 {
+			return fmt.Errorf("statement ingestion changed during review; reload and retry")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return s.getStatementIngestion(ctx, groupID, ingestionID, false)
+}
+
+// CreateCombinedStatementMatch stages one create or update for multiple source
+// rows. New transaction fields are stored separately from the source values.
+func (s *ExpenseService) CreateCombinedStatementMatch(ctx context.Context, groupID, ingestionID, userID string, req *request.CreateCombinedStatementMatchRequest) (*response.StatementIngestionDetail, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request is required")
+	}
+	if err := s.ensureStatementGroupAccess(ctx, groupID, userID); err != nil {
+		return nil, err
+	}
+	matchExpenseID := strings.TrimSpace(req.MatchExpenseID)
+	draft, err := normalizeCombinedStatementDraft(req)
+	if err != nil {
+		return nil, err
+	}
+	if draft == nil {
+		if err := s.ensureMatchExpense(ctx, groupID, matchExpenseID); err != nil {
+			return nil, err
+		}
+	}
+	selectedIDs, err := normalizedCombinedStatementRowIDs(req.RowIDs)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		lockedDetail, err := loadStatementIngestionForUpdate(ctx, tx, groupID, ingestionID)
+		if err != nil {
+			return err
+		}
+		if lockedDetail.Ingestion.Status == statementStatusConfirmed {
+			return fmt.Errorf("confirmed statement ingestion cannot be edited")
+		}
+		selectedRows, err := validateCombinedStatementRows(lockedDetail.Rows, selectedIDs, matchExpenseID)
+		if err != nil {
+			return err
+		}
+		if draft == nil {
+			master, err := loadCombinedMatchMasterForUpdate(tx, groupID, matchExpenseID)
+			if err != nil { return err }
+			if err := ensureCombinedMatchMasterCompatible(selectedRows, master); err != nil { return err }
+		} else {
+			if err := s.ensureActiveStatementCategory(ctx, groupID, draft.CategoryID, userID, selectedRows[0].Type); err != nil { return err }
+			if err := s.ensureActiveStatementAccount(ctx, groupID, derefString(selectedRows[0].AccountID)); err != nil { return err }
+		}
+		combinedMatchID, err := uuid.GenerateUUID()
+		if err != nil {
+			return fmt.Errorf("generate combined statement match id: %w", err)
+		}
+		nextRows := append([]dao.ExpenseStatementIngestionRow(nil), lockedDetail.Rows...)
+		reviewStatus := "matched"
+		var matchID *string
+		var draftJSON any
+		if draft != nil {
+			reviewStatus = "new"
+			encoded, err := json.Marshal(draft)
+			if err != nil { return err }
+			draftJSON = gorm.Expr("?::jsonb", string(encoded))
+		} else { matchID = stringPointer(matchExpenseID) }
+		for i := range nextRows {
+			if _, selected := selectedIDs[nextRows[i].ID]; !selected {
+				continue
+			}
+			nextRows[i].ReviewStatus = reviewStatus
+			nextRows[i].MatchExpenseID = matchID
+			nextRows[i].CombinedTransaction = draft
+			nextRows[i].CombinedMatchID = stringPointer(combinedMatchID)
+			nextRows[i].ReviewedBy = stringPointer(strings.TrimSpace(userID))
+			nextRows[i].ReviewedAt = &now
+			nextRows[i].UpdatedAt = now
+			result := tx.Table((dao.ExpenseStatementIngestionRow{}).TableName()).
+				Where("id = ?::uuid and ingestion_id = ?::uuid and group_id = ?::uuid and deleted_at is null", nextRows[i].ID, ingestionID, groupID).
+				Updates(map[string]any{"review_status": reviewStatus, "match_expense_id": matchID, "combined_match_id": combinedMatchID, "combined_transaction": draftJSON, "reviewed_by": stringPointer(strings.TrimSpace(userID)), "reviewed_at": now, "updated_at": now})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("statement row changed during combined matching; reload and retry")
+			}
+		}
+		validation := buildStatementValidation(nextRows, lockedDetail.Ingestion.StatementCurrency, lockedDetail.Ingestion.PreviousBalance, lockedDetail.Ingestion.DeclaredNewTransactionsTotal, lockedDetail.Ingestion.StatementGrandTotal, lockedDetail.Ingestion.CardholderControls)
+		status := statementIngestionStatus(nextRows, "", dao.ExpenseStatementIngestionRow{})
+		result := tx.Table((dao.ExpenseStatementIngestion{}).TableName()).
+			Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", ingestionID, groupID).
+			Updates(map[string]any{"status": status, "validation": validation, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("statement ingestion changed during combined matching; reload and retry")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return s.getStatementIngestion(ctx, groupID, ingestionID, false)
+}
+
+// DissolveCombinedStatementMatch returns every group member to the ordinary
+// unreviewed state. Clearing both IDs avoids turning one group into invalid,
+// duplicate one-to-one matches.
+func (s *ExpenseService) DissolveCombinedStatementMatch(ctx context.Context, groupID, ingestionID, combinedMatchID, userID string) (*response.StatementIngestionDetail, error) {
+	if err := s.ensureStatementGroupAccess(ctx, groupID, userID); err != nil {
+		return nil, err
+	}
+	combinedMatchID = strings.TrimSpace(combinedMatchID)
+	if combinedMatchID == "" {
+		return nil, fmt.Errorf("combinedMatchId is required")
+	}
+	now := time.Now().UTC()
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		lockedDetail, err := loadStatementIngestionForUpdate(ctx, tx, groupID, ingestionID)
+		if err != nil {
+			return err
+		}
+		if lockedDetail.Ingestion.Status == statementStatusConfirmed {
+			return fmt.Errorf("confirmed statement ingestion cannot be edited")
+		}
+		groupRows := make([]dao.ExpenseStatementIngestionRow, 0)
+		for _, row := range lockedDetail.Rows {
+			if derefString(row.CombinedMatchID) == combinedMatchID {
+				groupRows = append(groupRows, row)
+			}
+		}
+		if len(groupRows) == 0 {
+			return fmt.Errorf("combined statement match not found")
+		}
+		if len(groupRows) < 2 {
+			return fmt.Errorf("combined statement match is invalid; it must contain at least two active rows")
+		}
+		nextRows := append([]dao.ExpenseStatementIngestionRow(nil), lockedDetail.Rows...)
+		for i := range nextRows {
+			if derefString(nextRows[i].CombinedMatchID) != combinedMatchID {
+				continue
+			}
+			nextRows[i].ReviewStatus = "unreviewed"
+			nextRows[i].MatchExpenseID = nil
+			nextRows[i].CombinedMatchID = nil
+			nextRows[i].CombinedTransaction = nil
+			nextRows[i].ReviewedBy = nil
+			nextRows[i].ReviewedAt = nil
+			nextRows[i].UpdatedAt = now
+			result := tx.Table((dao.ExpenseStatementIngestionRow{}).TableName()).
+				Where("id = ?::uuid and ingestion_id = ?::uuid and group_id = ?::uuid and combined_match_id = ?::uuid and deleted_at is null", nextRows[i].ID, ingestionID, groupID, combinedMatchID).
+				Updates(map[string]any{"review_status": "unreviewed", "match_expense_id": nil, "combined_match_id": nil, "combined_transaction": nil, "reviewed_by": nil, "reviewed_at": nil, "updated_at": now})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("statement row changed during uncombine; reload and retry")
+			}
+		}
+		validation := buildStatementValidation(nextRows, lockedDetail.Ingestion.StatementCurrency, lockedDetail.Ingestion.PreviousBalance, lockedDetail.Ingestion.DeclaredNewTransactionsTotal, lockedDetail.Ingestion.StatementGrandTotal, lockedDetail.Ingestion.CardholderControls)
+		status := statementIngestionStatus(nextRows, "", dao.ExpenseStatementIngestionRow{})
+		result := tx.Table((dao.ExpenseStatementIngestion{}).TableName()).
+			Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", ingestionID, groupID).
+			Updates(map[string]any{"status": status, "validation": validation, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("statement ingestion changed during uncombine; reload and retry")
 		}
 		return nil
 	}); err != nil {
@@ -457,6 +714,10 @@ func (s *ExpenseService) ConfirmStatementIngestion(ctx context.Context, groupID,
 		if lockedDetail.Ingestion.Status != statementStatusReady {
 			return fmt.Errorf("statement ingestion is not ready for confirmation")
 		}
+		combinedGroups, err := validateCombinedStatementGroups(lockedDetail.Rows)
+		if err != nil {
+			return err
+		}
 		matchedExpenseIDs := make(map[string]struct{}, len(lockedDetail.Rows))
 		for _, row := range lockedDetail.Rows {
 			if err := s.validateStatementRowForConfirmation(ctx, groupID, userID, row); err != nil {
@@ -465,7 +726,7 @@ func (s *ExpenseService) ConfirmStatementIngestion(ctx context.Context, groupID,
 			if row.ReviewStatus == "ignored" {
 				continue
 			}
-			if row.ReviewStatus == "matched" {
+			if row.ReviewStatus == "matched" && strings.TrimSpace(derefString(row.CombinedMatchID)) == "" {
 				matchID := derefString(row.MatchExpenseID)
 				if _, duplicate := matchedExpenseIDs[matchID]; duplicate {
 					return fmt.Errorf("matched transaction is assigned to multiple rows in this ingestion")
@@ -476,16 +737,24 @@ func (s *ExpenseService) ConfirmStatementIngestion(ctx context.Context, groupID,
 			if !ok || !rate.RowUpdatedAt.Equal(row.UpdatedAt) {
 				return fmt.Errorf("statement changed during confirmation; review and retry")
 			}
-			metadata := map[string]any{
-				"statementIngestion": map[string]any{
-					"ingestionId": lockedDetail.Ingestion.ID, "rowId": row.ID, "sourceRowKey": row.SourceRowKey,
-					"sourceName": lockedDetail.Ingestion.SourceName, "institution": lockedDetail.Ingestion.Institution,
-					"sourceFingerprint": lockedDetail.Ingestion.SourceFingerprint,
-					"statementDate":     lockedDetail.Ingestion.StatementDate, "statementReference": row.StatementReference,
-					"statementKind": row.StatementKind, "cardholder": row.Cardholder,
-					"foreignAmount": row.ForeignAmount, "foreignCurrency": row.ForeignCurrency,
-				},
+		}
+
+		for combinedMatchID, rows := range combinedGroups {
+			if rows[0].ReviewStatus == "new" {
+				if err := s.confirmCombinedStatementNew(tx, lockedDetail.Ingestion, groupID, userID, combinedMatchID, rows, rates, baseCurrency, now); err != nil { return err }
+				continue
 			}
+			if err := s.confirmCombinedStatementMatch(ctx, tx, lockedDetail.Ingestion, groupID, combinedMatchID, rows, rates, baseCurrency, now); err != nil {
+				return err
+			}
+		}
+
+		for _, row := range lockedDetail.Rows {
+			if row.ReviewStatus == "ignored" || strings.TrimSpace(derefString(row.CombinedMatchID)) != "" {
+				continue
+			}
+			rate := rates[row.ID]
+			metadata := statementIngestionMetadata(lockedDetail.Ingestion, row)
 			if row.ReviewStatus == "new" {
 				entryID, err := uuid.GenerateUUID()
 				if err != nil {
@@ -504,11 +773,8 @@ func (s *ExpenseService) ConfirmStatementIngestion(ctx context.Context, groupID,
 				continue
 			}
 
-			current := dao.ExpenseEntry{}
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Table((dao.ExpenseEntry{}).TableName()).Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", derefString(row.MatchExpenseID), groupID).First(&current).Error; err != nil {
-				if err == gorm.ErrRecordNotFound {
-					return fmt.Errorf("matched transaction not found")
-				}
+			current, err := loadCombinedMatchMasterForUpdate(tx, groupID, derefString(row.MatchExpenseID))
+			if err != nil {
 				return err
 			}
 			current.Metadata = normalizeMetadata(current.Metadata)
@@ -553,6 +819,228 @@ type statementConfirmationRate struct {
 	BaseAmount   int
 	FxRate       float64
 	FxRateDate   string
+}
+
+type combinedStatementConfirmation struct {
+	TotalAmount     int
+	TotalBaseAmount int
+	EffectiveFxRate float64
+	FxRateDate      string
+	Provenance      map[string]any
+}
+
+// The two actions are exclusive. Omitting newTransaction retains the original
+// API contract for clients that only support matching.
+func normalizeCombinedStatementDraft(req *request.CreateCombinedStatementMatchRequest) (*dao.CombinedStatementTransaction, error) {
+	if req.NewTransaction == nil {
+		if strings.TrimSpace(req.MatchExpenseID) == "" { return nil, fmt.Errorf("matchExpenseId or newTransaction is required") }
+		return nil, nil
+	}
+	if strings.TrimSpace(req.MatchExpenseID) != "" { return nil, fmt.Errorf("choose either matchExpenseId or newTransaction") }
+	draft := dao.CombinedStatementTransaction{
+		Merchant: strings.TrimSpace(req.NewTransaction.Merchant), OccurredOn: strings.TrimSpace(req.NewTransaction.OccurredOn),
+		CategoryID: strings.TrimSpace(req.NewTransaction.CategoryID), Note: strings.TrimSpace(req.NewTransaction.Note),
+	}
+	if err := validateCombinedStatementDraft(draft); err != nil { return nil, err }
+	return &draft, nil
+}
+
+func validateCombinedStatementDraft(draft dao.CombinedStatementTransaction) error {
+	if strings.TrimSpace(draft.Merchant) == "" { return fmt.Errorf("new transaction merchant is required") }
+	if _, err := normalizeDate(draft.OccurredOn); err != nil { return fmt.Errorf("new transaction occurredOn: %w", err) }
+	if strings.TrimSpace(draft.CategoryID) == "" { return fmt.Errorf("new transaction categoryId is required") }
+	return nil
+}
+
+func buildCombinedStatementEntry(ingestion dao.ExpenseStatementIngestion, groupID, userID, entryID, combinedID string, rows []dao.ExpenseStatementIngestionRow, rates map[string]statementConfirmationRate, baseCurrency string, now time.Time) (dao.ExpenseEntry, error) {
+	groups, err := validateCombinedStatementGroups(rows)
+	if err != nil { return dao.ExpenseEntry{}, err }
+	if len(groups) != 1 || len(groups[combinedID]) != len(rows) || len(rows) < 2 || rows[0].ReviewStatus != "new" { return dao.ExpenseEntry{}, fmt.Errorf("expected one new combined transaction group") }
+	confirmation, err := buildCombinedStatementConfirmation(ingestion, combinedID, rows, rates)
+	if err != nil { return dao.ExpenseEntry{}, err }
+	draft := rows[0].CombinedTransaction
+	return dao.ExpenseEntry{
+		ID: entryID, GroupID: groupID, AccountID: derefString(rows[0].AccountID), CategoryID: draft.CategoryID,
+		Type: rows[0].Type, Amount: confirmation.TotalAmount, Currency: rows[0].Currency,
+		BaseAmount: confirmation.TotalBaseAmount, BaseCurrency: baseCurrency, FxRate: confirmation.EffectiveFxRate, FxRateDate: confirmation.FxRateDate,
+		OccurredOn: draft.OccurredOn, Merchant: draft.Merchant, Note: draft.Note,
+		Metadata: map[string]any{"statementIngestion": confirmation.Provenance},
+		CreatedBy: stringPointer(userID), CreatedAt: now, UpdatedAt: now,
+	}, nil
+}
+
+func (s *ExpenseService) confirmCombinedStatementNew(tx *gorm.DB, ingestion dao.ExpenseStatementIngestion, groupID, userID, combinedID string, rows []dao.ExpenseStatementIngestionRow, rates map[string]statementConfirmationRate, baseCurrency string, now time.Time) error {
+	entryID, err := uuid.GenerateUUID()
+	if err != nil { return err }
+	entry, err := buildCombinedStatementEntry(ingestion, groupID, userID, entryID, combinedID, rows, rates, baseCurrency, now)
+	if err != nil { return err }
+	if err := tx.Table((dao.ExpenseEntry{}).TableName()).Create(&entry).Error; err != nil { return err }
+	if err := upsertMerchant(tx, merchantFromEntry(groupID, entry, now)); err != nil { return err }
+	for _, row := range rows {
+		result := tx.Table((dao.ExpenseStatementIngestionRow{}).TableName()).
+			Where("id = ?::uuid and ingestion_id = ?::uuid and group_id = ?::uuid and combined_match_id = ?::uuid and review_status = 'new' and match_expense_id is null and deleted_at is null", row.ID, ingestion.ID, groupID, combinedID).
+			Updates(map[string]any{"confirmed_expense_id": entry.ID, "updated_at": now})
+		if result.Error != nil { return result.Error }
+		if result.RowsAffected != 1 { return fmt.Errorf("statement row changed during confirmation; review and retry") }
+	}
+	return nil
+}
+
+func validateCombinedStatementGroups(rows []dao.ExpenseStatementIngestionRow) (map[string][]dao.ExpenseStatementIngestionRow, error) {
+	groups := make(map[string][]dao.ExpenseStatementIngestionRow)
+	matchOwners := make(map[string]string)
+	for _, row := range rows {
+		combinedMatchID := strings.TrimSpace(derefString(row.CombinedMatchID))
+		if combinedMatchID == "" {
+			if row.ReviewStatus == "matched" {
+				matchID := strings.TrimSpace(derefString(row.MatchExpenseID))
+				if owner, exists := matchOwners[matchID]; exists {
+					return nil, fmt.Errorf("matched transaction is assigned to multiple rows or combined groups in this ingestion (%s)", owner)
+				}
+				matchOwners[matchID] = "row " + row.ID
+			}
+			continue
+		}
+		if row.ReviewStatus == "new" {
+			if row.CombinedTransaction == nil || strings.TrimSpace(derefString(row.MatchExpenseID)) != "" { return nil, fmt.Errorf("new combined rows require a draft and no matched transaction") }
+			if err := validateCombinedStatementDraft(*row.CombinedTransaction); err != nil { return nil, err }
+		} else if row.ReviewStatus != "matched" || strings.TrimSpace(derefString(row.MatchExpenseID)) == "" || row.CombinedTransaction != nil {
+			return nil, fmt.Errorf("combined statement match rows must be marked matched with a transaction")
+		}
+		groups[combinedMatchID] = append(groups[combinedMatchID], row)
+	}
+	for combinedMatchID, groupRows := range groups {
+		if len(groupRows) < 2 {
+			return nil, fmt.Errorf("combined statement match %s must contain at least two active rows", combinedMatchID)
+		}
+		first := groupRows[0]
+		matchID := strings.TrimSpace(derefString(first.MatchExpenseID))
+		if first.ReviewStatus == "matched" {
+			if owner, exists := matchOwners[matchID]; exists {
+				return nil, fmt.Errorf("matched transaction is assigned to multiple rows or combined groups in this ingestion (%s)", owner)
+			}
+			matchOwners[matchID] = "combined match " + combinedMatchID
+		}
+		if strings.TrimSpace(derefString(first.AccountID)) == "" {
+			return nil, fmt.Errorf("combined statement match rows must have an accountId")
+		}
+		for _, row := range groupRows[1:] {
+			if row.ReviewStatus != first.ReviewStatus { return nil, fmt.Errorf("combined rows must use the same review decision") }
+			if first.CombinedTransaction != nil && (row.CombinedTransaction == nil || *row.CombinedTransaction != *first.CombinedTransaction) { return nil, fmt.Errorf("combined rows must use the same new transaction details") }
+			if derefString(row.MatchExpenseID) != matchID {
+				return nil, fmt.Errorf("combined statement match rows must use the same matched transaction")
+			}
+			if row.Currency != first.Currency || row.Type != first.Type || derefString(row.AccountID) != derefString(first.AccountID) {
+				return nil, fmt.Errorf("combined statement match rows must use the same currency, type, and account")
+			}
+		}
+	}
+	return groups, nil
+}
+
+func statementIngestionMetadata(ingestion dao.ExpenseStatementIngestion, row dao.ExpenseStatementIngestionRow) map[string]any {
+	return map[string]any{
+		"statementIngestion": map[string]any{
+			"ingestionId": ingestion.ID, "rowId": row.ID, "sourceRowKey": row.SourceRowKey,
+			"sourceName": ingestion.SourceName, "institution": ingestion.Institution,
+			"sourceFingerprint": ingestion.SourceFingerprint,
+			"statementDate":     ingestion.StatementDate, "statementReference": row.StatementReference,
+			"statementKind": row.StatementKind, "cardholder": row.Cardholder,
+			"foreignAmount": row.ForeignAmount, "foreignCurrency": row.ForeignCurrency,
+		},
+	}
+}
+
+func buildCombinedStatementConfirmation(ingestion dao.ExpenseStatementIngestion, combinedMatchID string, rows []dao.ExpenseStatementIngestionRow, rates map[string]statementConfirmationRate) (combinedStatementConfirmation, error) {
+	if len(rows) < 2 {
+		return combinedStatementConfirmation{}, fmt.Errorf("combined statement match must contain at least two rows")
+	}
+	totalAmount, totalBaseAmount := 0, 0
+	fxRateDate := ""
+	sourceRows := make([]map[string]any, 0, len(rows))
+	sourceRowIDs := make([]string, 0, len(rows))
+	sourceRowKeys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		rate, ok := rates[row.ID]
+		if !ok {
+			return combinedStatementConfirmation{}, fmt.Errorf("statement changed during confirmation; review and retry")
+		}
+		totalAmount += row.Amount
+		totalBaseAmount += rate.BaseAmount
+		if rate.FxRateDate > fxRateDate {
+			fxRateDate = rate.FxRateDate
+		}
+		sourceRowIDs = append(sourceRowIDs, row.ID)
+		sourceRowKeys = append(sourceRowKeys, row.SourceRowKey)
+		sourceRows = append(sourceRows, map[string]any{
+			"rowId": row.ID, "sourceRowKey": row.SourceRowKey, "amount": row.Amount, "currency": row.Currency,
+			"merchant": row.Merchant, "cardholder": row.Cardholder, "statementKind": row.StatementKind,
+			"baseAmount": rate.BaseAmount, "fxRate": rate.FxRate, "fxRateDate": rate.FxRateDate,
+			"occurredOn": row.OccurredOn, "statementReference": row.StatementReference,
+			"foreignAmount": row.ForeignAmount, "foreignCurrency": row.ForeignCurrency,
+		})
+	}
+	if totalAmount <= 0 || totalBaseAmount <= 0 || fxRateDate == "" {
+		return combinedStatementConfirmation{}, fmt.Errorf("combined statement match total must be greater than zero")
+	}
+	return combinedStatementConfirmation{
+		TotalAmount:     totalAmount,
+		TotalBaseAmount: totalBaseAmount,
+		EffectiveFxRate: float64(totalBaseAmount) / float64(totalAmount),
+		FxRateDate:      fxRateDate,
+		Provenance: map[string]any{
+			"ingestionId": ingestion.ID, "combinedMatchId": combinedMatchID,
+			"sourceRowIds": sourceRowIDs, "sourceRowKeys": sourceRowKeys, "sourceRows": sourceRows,
+			"sourceName": ingestion.SourceName, "institution": ingestion.Institution,
+			"sourceFingerprint": ingestion.SourceFingerprint, "statementDate": ingestion.StatementDate,
+			"fxRateStrategy": "weighted_effective", "fxRateDate": fxRateDate,
+		},
+	}, nil
+}
+
+// confirmCombinedStatementMatch intentionally updates only calculated amounts,
+// FX representation, provenance, and timestamps. The existing master
+// transaction remains authoritative for merchant, date, category, and note.
+func (s *ExpenseService) confirmCombinedStatementMatch(ctx context.Context, tx *gorm.DB, ingestion dao.ExpenseStatementIngestion, groupID, combinedMatchID string, rows []dao.ExpenseStatementIngestionRow, rates map[string]statementConfirmationRate, baseCurrency string, now time.Time) error {
+	confirmation, err := buildCombinedStatementConfirmation(ingestion, combinedMatchID, rows, rates)
+	if err != nil {
+		return err
+	}
+	matchExpenseID := derefString(rows[0].MatchExpenseID)
+	master, err := loadCombinedMatchMasterForUpdate(tx, groupID, matchExpenseID)
+	if err != nil {
+		return err
+	}
+	if err := ensureCombinedMatchMasterCompatible(rows, master); err != nil {
+		return err
+	}
+
+	master.Metadata = normalizeMetadata(master.Metadata)
+	master.Metadata["statementIngestion"] = confirmation.Provenance
+	result := tx.Table((dao.ExpenseEntry{}).TableName()).
+		Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", master.ID, groupID).
+		Updates(map[string]any{
+			"amount": confirmation.TotalAmount, "base_amount": confirmation.TotalBaseAmount, "base_currency": baseCurrency,
+			"fx_rate": confirmation.EffectiveFxRate, "fx_rate_date": confirmation.FxRateDate, "metadata": master.Metadata, "updated_at": now,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("matched transaction not found")
+	}
+	for _, row := range rows {
+		result := tx.Table((dao.ExpenseStatementIngestionRow{}).TableName()).
+			Where("id = ?::uuid and ingestion_id = ?::uuid and group_id = ?::uuid and combined_match_id = ?::uuid and match_expense_id = ?::uuid and deleted_at is null", row.ID, ingestion.ID, groupID, combinedMatchID, master.ID).
+			Updates(map[string]any{"confirmed_expense_id": master.ID, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("statement row changed during confirmation; review and retry")
+		}
+	}
+	return nil
 }
 
 func (s *ExpenseService) DeleteStatementIngestion(ctx context.Context, groupID, ingestionID, userID string) (*response.StatementIngestionDetail, error) {
@@ -622,7 +1110,8 @@ func (s *ExpenseService) getStatementIngestion(ctx context.Context, groupID, ing
 			to_char(occurred_on, 'YYYY-MM-DD') as occurred_on, merchant, amount, currency, foreign_amount, foreign_currency, statement_kind, type, cardholder, statement_reference,
 			account_id::text as account_id, category_id::text as category_id, note, review_status,
 			suggested_expense_id::text as suggested_expense_id, match_confidence,
-			match_expense_id::text as match_expense_id, confirmed_expense_id::text as confirmed_expense_id, warning_codes,
+			match_expense_id::text as match_expense_id, combined_match_id::text as combined_match_id, combined_transaction,
+			confirmed_expense_id::text as confirmed_expense_id, warning_codes,
 			reviewed_by::text as reviewed_by, reviewed_at, created_at, updated_at, deleted_at
 		from %s where ingestion_id = ?::uuid and group_id = ?::uuid %s order by occurred_on nulls last, source_row_key
 	`, dao.QualifiedTable("expense_statement_ingestion_rows"), deletedClause), ingestionID, groupID).Scan(&rows).Error
@@ -654,7 +1143,8 @@ func loadStatementIngestionForUpdate(ctx context.Context, tx *gorm.DB, groupID, 
 			to_char(occurred_on, 'YYYY-MM-DD') as occurred_on, merchant, amount, currency, foreign_amount, foreign_currency, statement_kind, type, cardholder, statement_reference,
 			account_id::text as account_id, category_id::text as category_id, note, review_status,
 			suggested_expense_id::text as suggested_expense_id, match_confidence,
-			match_expense_id::text as match_expense_id, confirmed_expense_id::text as confirmed_expense_id, warning_codes,
+			match_expense_id::text as match_expense_id, combined_match_id::text as combined_match_id, combined_transaction,
+			confirmed_expense_id::text as confirmed_expense_id, warning_codes,
 			reviewed_by::text as reviewed_by, reviewed_at, created_at, updated_at, deleted_at
 		from %s where ingestion_id = ?::uuid and group_id = ?::uuid and deleted_at is null order by occurred_on nulls last, source_row_key for update
 	`, dao.QualifiedTable("expense_statement_ingestion_rows")), ingestionID, groupID).Scan(&rows).Error
@@ -1054,8 +1544,17 @@ func (s *ExpenseService) validateStatementRowForConfirmation(ctx context.Context
 	if err := s.ensureActiveStatementAccount(ctx, groupID, derefString(row.AccountID)); err != nil {
 		return err
 	}
-	if err := s.ensureActiveStatementCategory(ctx, groupID, derefString(row.CategoryID), userID, row.Type); err != nil {
-		return err
+	// A combined match deliberately keeps the existing master transaction's
+	// category. OCR rows in that group may therefore be uncategorized while the
+	// ordinary new/one-to-one confirmation path still requires a category.
+	if row.ReviewStatus == "new" && strings.TrimSpace(derefString(row.CombinedMatchID)) != "" {
+		if row.CombinedTransaction == nil { return fmt.Errorf("new combined transaction details are required") }
+		if err := validateCombinedStatementDraft(*row.CombinedTransaction); err != nil { return err }
+		if err := s.ensureActiveStatementCategory(ctx, groupID, row.CombinedTransaction.CategoryID, userID, row.Type); err != nil { return err }
+	} else if strings.TrimSpace(derefString(row.CombinedMatchID)) == "" {
+		if err := s.ensureActiveStatementCategory(ctx, groupID, derefString(row.CategoryID), userID, row.Type); err != nil {
+			return err
+		}
 	}
 	if row.ReviewStatus == "matched" {
 		return s.ensureMatchExpense(ctx, groupID, derefString(row.MatchExpenseID))
@@ -1142,6 +1641,120 @@ func (s *ExpenseService) ensureNoDuplicateStatementMatch(ctx context.Context, gr
 	}
 	if strings.TrimSpace(existingID) != "" {
 		return fmt.Errorf("matched transaction is already assigned to another row in this ingestion")
+	}
+	return nil
+}
+
+func ensureNoDuplicateStatementMatchTx(tx *gorm.DB, groupID, ingestionID, rowID, expenseID string) error {
+	if strings.TrimSpace(expenseID) == "" {
+		return fmt.Errorf("matchExpenseId is required")
+	}
+	var existingID string
+	err := tx.Raw(fmt.Sprintf(`
+		select id::text from %s
+		where ingestion_id = ?::uuid and group_id = ?::uuid and match_expense_id = ?::uuid
+		and id <> ?::uuid and deleted_at is null
+		limit 1
+	`, dao.QualifiedTable("expense_statement_ingestion_rows")), ingestionID, groupID, expenseID, rowID).Scan(&existingID).Error
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(existingID) != "" {
+		return fmt.Errorf("matched transaction is already assigned to another row or combined group in this ingestion")
+	}
+	return nil
+}
+
+func normalizedCombinedStatementRowIDs(rowIDs []string) (map[string]struct{}, error) {
+	if len(rowIDs) < 2 {
+		return nil, fmt.Errorf("rowIds must contain at least two distinct rows")
+	}
+	selected := make(map[string]struct{}, len(rowIDs))
+	for _, rawID := range rowIDs {
+		rowID := strings.TrimSpace(rawID)
+		if rowID == "" {
+			return nil, fmt.Errorf("rowIds must not contain an empty row id")
+		}
+		if _, duplicate := selected[rowID]; duplicate {
+			return nil, fmt.Errorf("rowIds must not contain duplicate row ids")
+		}
+		selected[rowID] = struct{}{}
+	}
+	if len(selected) < 2 {
+		return nil, fmt.Errorf("rowIds must contain at least two distinct rows")
+	}
+	return selected, nil
+}
+
+// validateCombinedStatementRows only considers rows loaded from the active,
+// FOR UPDATE ingestion snapshot. This prevents a deleted or concurrently edited
+// OCR row from silently joining a combined match.
+func validateCombinedStatementRows(rows []dao.ExpenseStatementIngestionRow, selectedIDs map[string]struct{}, matchExpenseID string) ([]dao.ExpenseStatementIngestionRow, error) {
+	selectedRows := make([]dao.ExpenseStatementIngestionRow, 0, len(selectedIDs))
+	for _, row := range rows {
+		_, selected := selectedIDs[row.ID]
+		if !selected {
+			if matchExpenseID != "" && derefString(row.MatchExpenseID) == matchExpenseID {
+				return nil, fmt.Errorf("matched transaction is already assigned to another row or combined group in this ingestion")
+			}
+			continue
+		}
+		if strings.TrimSpace(derefString(row.CombinedMatchID)) != "" {
+			return nil, fmt.Errorf("statement row is already part of a combined match")
+		}
+		selectedRows = append(selectedRows, row)
+	}
+	if len(selectedRows) != len(selectedIDs) {
+		return nil, fmt.Errorf("one or more statement rows were not found or are no longer active")
+	}
+	if len(selectedRows) < 2 {
+		return nil, fmt.Errorf("rowIds must contain at least two active rows")
+	}
+	first := selectedRows[0]
+	firstAccountID := strings.TrimSpace(derefString(first.AccountID))
+	if firstAccountID == "" {
+		return nil, fmt.Errorf("combined rows must have an accountId")
+	}
+	for _, row := range selectedRows[1:] {
+		if row.Currency != first.Currency {
+			return nil, fmt.Errorf("combined rows must use the same currency")
+		}
+		if row.Type != first.Type {
+			return nil, fmt.Errorf("combined rows must use the same type")
+		}
+		if strings.TrimSpace(derefString(row.AccountID)) != firstAccountID {
+			return nil, fmt.Errorf("combined rows must use the same account")
+		}
+	}
+	return selectedRows, nil
+}
+
+func loadCombinedMatchMasterForUpdate(tx *gorm.DB, groupID, matchExpenseID string) (dao.ExpenseEntry, error) {
+	master := dao.ExpenseEntry{}
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Table((dao.ExpenseEntry{}).TableName()).
+		Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", matchExpenseID, groupID).First(&master).Error
+	if err == gorm.ErrRecordNotFound {
+		return dao.ExpenseEntry{}, fmt.Errorf("matched transaction not found")
+	}
+	if err != nil {
+		return dao.ExpenseEntry{}, err
+	}
+	return master, nil
+}
+
+func ensureCombinedMatchMasterCompatible(rows []dao.ExpenseStatementIngestionRow, master dao.ExpenseEntry) error {
+	if len(rows) < 2 {
+		return fmt.Errorf("combined match must contain at least two rows")
+	}
+	first := rows[0]
+	if master.Currency != first.Currency {
+		return fmt.Errorf("matched transaction currency must match the combined rows")
+	}
+	if master.Type != first.Type {
+		return fmt.Errorf("matched transaction type must match the combined rows")
+	}
+	if master.AccountID != derefString(first.AccountID) {
+		return fmt.Errorf("matched transaction account must match the combined rows")
 	}
 	return nil
 }
