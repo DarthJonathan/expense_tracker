@@ -207,22 +207,22 @@ type ExpenseStatementIngestionRow struct {
 	// CombinedMatchID links source rows for one create or update on confirmation.
 	// CombinedTransaction is optional; nil preserves the legacy match behavior.
 	CombinedTransaction *CombinedStatementTransaction `gorm:"column:combined_transaction;type:jsonb;serializer:json" json:"combinedTransaction,omitempty"`
-	CombinedMatchID    *string                    `gorm:"column:combined_match_id;type:uuid" json:"combinedMatchId,omitempty"`
-	ConfirmedExpenseID *string                    `gorm:"column:confirmed_expense_id;type:uuid;index" json:"confirmedExpenseId,omitempty"`
-	WarningCodes       []string                   `gorm:"column:warning_codes;type:jsonb;serializer:json;not null;default:'[]'" json:"warningCodes"`
-	ReviewedBy         *string                    `gorm:"column:reviewed_by;type:uuid" json:"reviewedBy,omitempty"`
-	ReviewedAt         *time.Time                 `gorm:"column:reviewed_at" json:"reviewedAt,omitempty"`
-	CreatedAt          time.Time                  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
-	UpdatedAt          time.Time                  `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
-	DeletedAt          *time.Time                 `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
-	Ingestion          *ExpenseStatementIngestion `gorm:"foreignKey:IngestionID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
-	Group              *ExpenseGroup              `gorm:"foreignKey:GroupID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
-	Account            *ExpenseAccount            `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
-	Category           *ExpenseCategory           `gorm:"foreignKey:CategoryID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
-	SuggestedExpense   *ExpenseEntry              `gorm:"foreignKey:SuggestedExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
-	MatchedExpense     *ExpenseEntry              `gorm:"foreignKey:MatchExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
-	ConfirmedExpense   *ExpenseEntry              `gorm:"foreignKey:ConfirmedExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
-	Reviewer           *ExpenseUser               `gorm:"foreignKey:ReviewedBy;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	CombinedMatchID     *string                       `gorm:"column:combined_match_id;type:uuid" json:"combinedMatchId,omitempty"`
+	ConfirmedExpenseID  *string                       `gorm:"column:confirmed_expense_id;type:uuid;index" json:"confirmedExpenseId,omitempty"`
+	WarningCodes        []string                      `gorm:"column:warning_codes;type:jsonb;serializer:json;not null;default:'[]'" json:"warningCodes"`
+	ReviewedBy          *string                       `gorm:"column:reviewed_by;type:uuid" json:"reviewedBy,omitempty"`
+	ReviewedAt          *time.Time                    `gorm:"column:reviewed_at" json:"reviewedAt,omitempty"`
+	CreatedAt           time.Time                     `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
+	UpdatedAt           time.Time                     `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
+	DeletedAt           *time.Time                    `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
+	Ingestion           *ExpenseStatementIngestion    `gorm:"foreignKey:IngestionID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+	Group               *ExpenseGroup                 `gorm:"foreignKey:GroupID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+	Account             *ExpenseAccount               `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	Category            *ExpenseCategory              `gorm:"foreignKey:CategoryID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	SuggestedExpense    *ExpenseEntry                 `gorm:"foreignKey:SuggestedExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	MatchedExpense      *ExpenseEntry                 `gorm:"foreignKey:MatchExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	ConfirmedExpense    *ExpenseEntry                 `gorm:"foreignKey:ConfirmedExpenseID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
+	Reviewer            *ExpenseUser                  `gorm:"foreignKey:ReviewedBy;constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"-"`
 }
 
 type CombinedStatementTransaction struct {

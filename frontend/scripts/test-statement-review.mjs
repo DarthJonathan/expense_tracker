@@ -8,7 +8,8 @@ try {
 		compatibleCombinedMatchEntries,
 		countStatementReviews,
 		filterStatementRows,
-		matchedMasterUpdateCount
+		matchedMasterUpdateCount,
+		newMasterTransactionCount
 	} = await server.ssrLoadModule('/src/lib/statement-review.ts');
 
 	const row = (overrides = {}) => ({
@@ -44,6 +45,16 @@ try {
 		row({ id: 'ignored-combined-label', reviewStatus: 'ignored', combinedMatchId: 'not-an-update' })
 	];
 	assert.equal(matchedMasterUpdateCount(matchRows), 3, 'each combined group must count as one master update');
+	const newRows = [
+		row({ id: 'new-one', reviewStatus: 'new', combinedMatchId: 'new-group' }),
+		row({ id: 'new-two', reviewStatus: 'new', combinedMatchId: 'new-group' }),
+		row({ id: 'ordinary-new', reviewStatus: 'new' }),
+		...matchRows
+	];
+	assert.equal(newMasterTransactionCount(newRows), 2, 'combined sources create one transaction, plus the ordinary new row');
+	assert.equal(countStatementReviews(newRows).new, 3, 'review progress still counts source rows');
+	assert.equal(matchedMasterUpdateCount(newRows), 3, 'new groups do not increase matched update counts');
+	assert.equal(newMasterTransactionCount([]), 0);
 
 	assert.match(combinedStatementRowsCompatibilityError([row()]), /at least two/);
 	assert.match(combinedStatementRowsCompatibilityError([row(), row({ id: 'two', accountId: null })]), /same currency, type, and account/);
