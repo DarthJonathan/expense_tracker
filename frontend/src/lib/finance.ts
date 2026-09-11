@@ -1,4 +1,5 @@
 import { get, writable } from 'svelte/store';
+import { DEFAULT_FX_MARKUP_PERCENT } from './constants';
 import { putRecord, loadFinanceState, patchSettings } from './db';
 import { syncFinanceState } from './sync';
 import type {
@@ -83,9 +84,13 @@ export const finance = {
 	async init() {
 		const loaded = await loadFinanceState();
 		const baseCurrency = normalizeCurrencyCode(loaded.settings.baseCurrency);
+		const normalizedAccounts = loaded.accounts.map(normalizeAccount);
 		const normalizedEntries = loaded.entries.map((entry) => normalizeLedgerEntry(entry, baseCurrency));
-		financeState.set({ ...loaded, entries: normalizedEntries });
+		financeState.set({ ...loaded, accounts: normalizedAccounts, entries: normalizedEntries });
 
+		if (normalizedAccounts.some((account, index) => account !== loaded.accounts[index])) {
+			await Promise.all(normalizedAccounts.map((account) => putRecord('accounts', account)));
+		}
 		if (normalizedEntries.some((entry, index) => entry !== loaded.entries[index])) {
 			await Promise.all(normalizedEntries.map((entry) => putRecord('entries', entry)));
 		}
@@ -231,6 +236,7 @@ export const finance = {
 			name: normalizeText(formData.get('name'), 'New account'),
 			type: normalizeText(formData.get('type'), 'bank') as AccountType,
 			openingBalance: cents(formData.get('openingBalance')),
+			fxMarkupPercent: parseFXMarkupPercent(formData.get('fxMarkupPercent')),
 			color: normalizeText(formData.get('color'), '#4b5745'),
 			icon: normalizeText(formData.get('icon'), accountIconByType(normalizeText(formData.get('type'), 'bank') as AccountType)),
 			createdAt: now,
@@ -257,6 +263,7 @@ export const finance = {
 			name: normalizeText(formData.get('name'), existing.name),
 			type,
 			openingBalance: cents(formData.get('openingBalance')),
+			fxMarkupPercent: parseFXMarkupPercent(formData.get('fxMarkupPercent'), existing.fxMarkupPercent),
 			color: normalizeText(formData.get('color'), existing.color),
 			icon: normalizeText(formData.get('icon'), accountIconByType(type)),
 			deletedAt: inactive ? existing.deletedAt ?? isoNow() : null
@@ -404,6 +411,16 @@ function normalizeLedgerEntry(entry: LedgerEntry, fallbackBaseCurrency: string):
 	}
 
 	return { ...entry, currency, baseCurrency, baseAmount, fxRate, fxRateDate };
+}
+
+function normalizeAccount(account: Account): Account {
+	const fxMarkupPercent = parseFXMarkupPercent(account.fxMarkupPercent);
+	return account.fxMarkupPercent === fxMarkupPercent ? account : { ...account, fxMarkupPercent };
+}
+
+function parseFXMarkupPercent(value: FormDataEntryValue | number | null | undefined, fallback = DEFAULT_FX_MARKUP_PERCENT): number {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? Math.round(parsed * 1000) / 1000 : fallback;
 }
 
 async function upsertMerchantRecord(state: FinanceState, merchantName: string, occurredOn: string): Promise<void> {

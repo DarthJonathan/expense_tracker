@@ -8,11 +8,12 @@ type CreateGroupRequest struct {
 }
 
 type CreateAccountRequest struct {
-	Name           string `json:"name"`
-	Type           string `json:"type"`
-	OpeningBalance int    `json:"openingBalance"`
-	Color          string `json:"color,omitempty"`
-	Icon           string `json:"icon,omitempty"`
+	Name            string   `json:"name"`
+	Type            string   `json:"type"`
+	OpeningBalance  int      `json:"openingBalance"`
+	FXMarkupPercent *float64 `json:"fxMarkupPercent,omitempty"`
+	Color           string   `json:"color,omitempty"`
+	Icon            string   `json:"icon,omitempty"`
 }
 
 type CreateCategoryRequest struct {

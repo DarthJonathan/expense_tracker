@@ -22,6 +22,7 @@ export interface Account extends SyncableRecord {
 	name: string;
 	type: AccountType;
 	openingBalance: number;
+	fxMarkupPercent: number;
 	color: string;
 	icon: string;
 }

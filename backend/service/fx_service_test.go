@@ -37,15 +37,16 @@ func TestConvertToBaseAmountUsesHistoricalFXRate(t *testing.T) {
 		"USD",
 		"SGD",
 		"2026-08-09",
+		DefaultFXMarkupPercent,
 	)
 	if err != nil {
 		t.Fatalf("convert amount: %v", err)
 	}
-	if want := int(math.Round(12345 * 1.35)); baseAmount != want {
+	if want := int(math.Round(12345 * 1.35 * 1.035)); baseAmount != want {
 		t.Fatalf("base amount: got %d, want %d", baseAmount, want)
 	}
-	if rate != 1.35 {
-		t.Fatalf("rate: got %f, want 1.35", rate)
+	if math.Abs(rate-1.39725) > 0.000000001 {
+		t.Fatalf("rate: got %f, want 1.39725", rate)
 	}
 	if rateDate != "2026-08-08" {
 		t.Fatalf("rate date: got %q, want %q", rateDate, "2026-08-08")
@@ -65,12 +66,33 @@ func TestConvertToBaseAmountDoesNotSilentlyFallbackToOneToOne(t *testing.T) {
 		"USD",
 		"SGD",
 		"2026-08-09",
+		DefaultFXMarkupPercent,
 	)
 	if err == nil {
 		t.Fatal("expected conversion error")
 	}
 	if baseAmount != 0 || rate != 0 {
 		t.Fatalf("failed conversion must not return a 1:1 amount: amount=%d rate=%f", baseAmount, rate)
+	}
+}
+
+func TestConvertToBaseAmountUsesAccountFXMarkup(t *testing.T) {
+	resolver := &stubFXRateResolver{rate: 1.25, rateDate: "2026-08-08"}
+	service := &ExpenseService{FX: resolver}
+
+	baseAmount, rate, _, err := service.convertToBaseAmount(
+		context.Background(),
+		10000,
+		"USD",
+		"SGD",
+		"2026-08-09",
+		2.5,
+	)
+	if err != nil {
+		t.Fatalf("convert amount: %v", err)
+	}
+	if baseAmount != 12813 || math.Abs(rate-1.28125) > 0.000000001 {
+		t.Fatalf("account markup was not applied: amount=%d rate=%f", baseAmount, rate)
 	}
 }
 
@@ -101,8 +123,11 @@ func TestPrepareSyncedEntryFXConvertsPendingForeignEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare synced fx: %v", err)
 	}
-	if converted.BaseAmount != 1250 || converted.FxRate != 1.25 {
+	if converted.BaseAmount != 1294 || math.Abs(converted.FxRate-1.29375) > 0.000000001 {
 		t.Fatalf("unexpected conversion: amount=%d rate=%f", converted.BaseAmount, converted.FxRate)
+	}
+	if converted.Metadata["fxMarkupPercent"] != DefaultFXMarkupPercent {
+		t.Fatalf("converted entry should record the default FX markup: %#v", converted.Metadata)
 	}
 	if converted.BaseCurrency != "SGD" || converted.FxRateDate != "2026-08-08" {
 		t.Fatalf("unexpected conversion metadata: base=%s date=%s", converted.BaseCurrency, converted.FxRateDate)

@@ -707,11 +707,15 @@ func (s *ExpenseService) ConfirmStatementIngestion(ctx context.Context, groupID,
 		}
 		// FX resolution may use a remote provider. Resolve it before the database
 		// transaction so locks are held only for local database work.
-		baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(ctx, row.Amount, row.Currency, baseCurrency, derefStatementDate(row.OccurredOn))
+		fxMarkupPercent, err := s.fxMarkupForAccount(ctx, groupID, derefString(row.AccountID), false)
 		if err != nil {
 			return nil, err
 		}
-		rates[row.ID] = statementConfirmationRate{RowUpdatedAt: row.UpdatedAt, BaseAmount: baseAmount, FxRate: fxRate, FxRateDate: fxRateDate}
+		baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(ctx, row.Amount, row.Currency, baseCurrency, derefStatementDate(row.OccurredOn), fxMarkupPercent)
+		if err != nil {
+			return nil, err
+		}
+		rates[row.ID] = statementConfirmationRate{RowUpdatedAt: row.UpdatedAt, BaseAmount: baseAmount, FxRate: fxRate, FxRateDate: fxRateDate, FXMarkupPercent: fxMarkupPercent}
 	}
 
 	now := time.Now().UTC()
@@ -769,6 +773,13 @@ func (s *ExpenseService) ConfirmStatementIngestion(ctx context.Context, groupID,
 			}
 			rate := rates[row.ID]
 			metadata := statementIngestionMetadata(lockedDetail.Ingestion, row)
+			rowCurrency, currencyErr := normalizeCurrencyCode(row.Currency)
+			if currencyErr != nil {
+				rowCurrency = "SGD"
+			}
+			if rowCurrency != baseCurrency {
+				metadata["fxMarkupPercent"] = rate.FXMarkupPercent
+			}
 			if row.ReviewStatus == "new" {
 				entryID, err := uuid.GenerateUUID()
 				if err != nil {
@@ -793,6 +804,9 @@ func (s *ExpenseService) ConfirmStatementIngestion(ctx context.Context, groupID,
 			}
 			current.Metadata = normalizeMetadata(current.Metadata)
 			current.Metadata["statementIngestion"] = metadata["statementIngestion"]
+			if rowCurrency != baseCurrency {
+				current.Metadata["fxMarkupPercent"] = rate.FXMarkupPercent
+			}
 			result := tx.Table((dao.ExpenseEntry{}).TableName()).Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", current.ID, groupID).Updates(map[string]any{
 				"account_id": row.AccountID, "category_id": row.CategoryID, "type": row.Type, "amount": row.Amount,
 				"currency": row.Currency, "base_amount": rate.BaseAmount, "base_currency": baseCurrency,
@@ -829,10 +843,11 @@ func (s *ExpenseService) ConfirmStatementIngestion(ctx context.Context, groupID,
 }
 
 type statementConfirmationRate struct {
-	RowUpdatedAt time.Time
-	BaseAmount   int
-	FxRate       float64
-	FxRateDate   string
+	RowUpdatedAt    time.Time
+	BaseAmount      int
+	FxRate          float64
+	FxRateDate      string
+	FXMarkupPercent float64
 }
 
 type combinedStatementConfirmation struct {
@@ -840,6 +855,7 @@ type combinedStatementConfirmation struct {
 	TotalBaseAmount int
 	EffectiveFxRate float64
 	FxRateDate      string
+	FXMarkupPercent float64
 	Provenance      map[string]any
 }
 
@@ -894,12 +910,20 @@ func buildCombinedStatementEntry(ingestion dao.ExpenseStatementIngestion, groupI
 		return dao.ExpenseEntry{}, err
 	}
 	draft := rows[0].CombinedTransaction
+	entryCurrency, currencyErr := normalizeCurrencyCode(rows[0].Currency)
+	if currencyErr != nil {
+		entryCurrency = "SGD"
+	}
+	metadata := map[string]any{"statementIngestion": confirmation.Provenance}
+	if entryCurrency != baseCurrency {
+		metadata["fxMarkupPercent"] = confirmation.FXMarkupPercent
+	}
 	return dao.ExpenseEntry{
 		ID: entryID, GroupID: groupID, AccountID: derefString(rows[0].AccountID), CategoryID: draft.CategoryID,
-		Type: rows[0].Type, Amount: confirmation.TotalAmount, Currency: rows[0].Currency,
+		Type: rows[0].Type, Amount: confirmation.TotalAmount, Currency: entryCurrency,
 		BaseAmount: confirmation.TotalBaseAmount, BaseCurrency: baseCurrency, FxRate: confirmation.EffectiveFxRate, FxRateDate: confirmation.FxRateDate,
 		OccurredOn: draft.OccurredOn, Merchant: draft.Merchant, Note: draft.Note,
-		Metadata:  map[string]any{"statementIngestion": confirmation.Provenance},
+		Metadata:  metadata,
 		CreatedBy: stringPointer(userID), CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
@@ -1012,6 +1036,7 @@ func buildCombinedStatementConfirmation(ingestion dao.ExpenseStatementIngestion,
 	}
 	totalAmount, totalBaseAmount := 0, 0
 	fxRateDate := ""
+	fxMarkupPercent := 0.0
 	sourceRows := make([]map[string]any, 0, len(rows))
 	sourceRowIDs := make([]string, 0, len(rows))
 	sourceRowKeys := make([]string, 0, len(rows))
@@ -1022,6 +1047,9 @@ func buildCombinedStatementConfirmation(ingestion dao.ExpenseStatementIngestion,
 		}
 		totalAmount += row.Amount
 		totalBaseAmount += rate.BaseAmount
+		if len(sourceRows) == 0 {
+			fxMarkupPercent = rate.FXMarkupPercent
+		}
 		if rate.FxRateDate > fxRateDate {
 			fxRateDate = rate.FxRateDate
 		}
@@ -1043,6 +1071,7 @@ func buildCombinedStatementConfirmation(ingestion dao.ExpenseStatementIngestion,
 		TotalBaseAmount: totalBaseAmount,
 		EffectiveFxRate: float64(totalBaseAmount) / float64(totalAmount),
 		FxRateDate:      fxRateDate,
+		FXMarkupPercent: fxMarkupPercent,
 		Provenance: map[string]any{
 			"ingestionId": ingestion.ID, "combinedMatchId": combinedMatchID,
 			"sourceRowIds": sourceRowIDs, "sourceRowKeys": sourceRowKeys, "sourceRows": sourceRows,
@@ -1072,6 +1101,13 @@ func (s *ExpenseService) confirmCombinedStatementMatch(ctx context.Context, tx *
 
 	master.Metadata = normalizeMetadata(master.Metadata)
 	master.Metadata["statementIngestion"] = confirmation.Provenance
+	entryCurrency, currencyErr := normalizeCurrencyCode(rows[0].Currency)
+	if currencyErr != nil {
+		entryCurrency = "SGD"
+	}
+	if entryCurrency != baseCurrency {
+		master.Metadata["fxMarkupPercent"] = confirmation.FXMarkupPercent
+	}
 	result := tx.Table((dao.ExpenseEntry{}).TableName()).
 		Where("id = ?::uuid and group_id = ?::uuid and deleted_at is null", master.ID, groupID).
 		Updates(map[string]any{

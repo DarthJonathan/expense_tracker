@@ -313,29 +313,39 @@ func upsertGroup(tx *gorm.DB, group dao.ExpenseGroup) error {
 func upsertAccount(tx *gorm.DB, account dao.ExpenseAccount) error {
 	now := time.Now().UTC()
 	table := dao.QualifiedTable("expense_accounts")
+	fxMarkupPercent := DefaultFXMarkupPercent
+	if account.FXMarkupPercent != nil {
+		var err error
+		fxMarkupPercent, err = normalizeFXMarkupPercent(*account.FXMarkupPercent)
+		if err != nil {
+			return fmt.Errorf("invalid account FX markup: %w", err)
+		}
+	}
 	row := map[string]any{
-		"id":              account.ID,
-		"group_id":        account.GroupID,
-		"name":            account.Name,
-		"type":            account.Type,
-		"opening_balance": account.OpeningBalance,
-		"color":           account.Color,
-		"icon":            normalizeIcon(account.Icon, defaultAccountIcon(account.Type)),
-		"created_at":      normalizeTime(account.CreatedAt, now),
-		"updated_at":      normalizeTime(account.UpdatedAt, now),
-		"deleted_at":      account.DeletedAt,
+		"id":                account.ID,
+		"group_id":          account.GroupID,
+		"name":              account.Name,
+		"type":              account.Type,
+		"opening_balance":   account.OpeningBalance,
+		"fx_markup_percent": fxMarkupPercent,
+		"color":             account.Color,
+		"icon":              normalizeIcon(account.Icon, defaultAccountIcon(account.Type)),
+		"created_at":        normalizeTime(account.CreatedAt, now),
+		"updated_at":        normalizeTime(account.UpdatedAt, now),
+		"deleted_at":        account.DeletedAt,
 	}
 
 	return tx.Table((dao.ExpenseAccount{}).TableName()).
 		Clauses(newerOnlyOnConflict(table, map[string]any{
-			"group_id":        row["group_id"],
-			"name":            row["name"],
-			"type":            row["type"],
-			"opening_balance": row["opening_balance"],
-			"color":           row["color"],
-			"icon":            row["icon"],
-			"updated_at":      row["updated_at"],
-			"deleted_at":      row["deleted_at"],
+			"group_id":          row["group_id"],
+			"name":              row["name"],
+			"type":              row["type"],
+			"opening_balance":   row["opening_balance"],
+			"fx_markup_percent": row["fx_markup_percent"],
+			"color":             row["color"],
+			"icon":              row["icon"],
+			"updated_at":        row["updated_at"],
+			"deleted_at":        row["deleted_at"],
 		})).
 		Create(row).Error
 }
@@ -609,6 +619,7 @@ func pullAccounts(tx *gorm.DB, groupID string) ([]dao.ExpenseAccount, error) {
 			name,
 			type,
 			opening_balance,
+			fx_markup_percent,
 			color,
 			icon,
 			created_at,

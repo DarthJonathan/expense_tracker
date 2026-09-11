@@ -25,6 +25,10 @@ type FXRateResolver interface {
 	ResolveRate(ctx context.Context, from string, to string, occurredOn string) (rate float64, rateDate string, err error)
 }
 
+// DefaultFXMarkupPercent matches the highest published foreign-transaction
+// fee among the cards in use, applied after the card-network conversion.
+const DefaultFXMarkupPercent = 3.5
+
 func NewExpenseService(db *gorm.DB) *ExpenseService {
 	return &ExpenseService{
 		DB: db,
@@ -170,17 +174,25 @@ func (s *ExpenseService) CreateAccount(ctx context.Context, groupID string, req 
 		color = "#4b5745"
 	}
 	icon := normalizeIcon(req.Icon, defaultAccountIcon(accountType))
+	fxMarkupPercent := DefaultFXMarkupPercent
+	if req.FXMarkupPercent != nil {
+		fxMarkupPercent, err = normalizeFXMarkupPercent(*req.FXMarkupPercent)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	account := &dao.ExpenseAccount{
-		ID:             id,
-		GroupID:        groupID,
-		Name:           name,
-		Type:           accountType,
-		OpeningBalance: req.OpeningBalance,
-		Color:          color,
-		Icon:           icon,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:              id,
+		GroupID:         groupID,
+		Name:            name,
+		Type:            accountType,
+		OpeningBalance:  req.OpeningBalance,
+		FXMarkupPercent: &fxMarkupPercent,
+		Color:           color,
+		Icon:            icon,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
 	if err := s.DB.WithContext(ctx).Table((dao.ExpenseAccount{}).TableName()).Create(account).Error; err != nil {
@@ -199,6 +211,7 @@ func (s *ExpenseService) ListAccounts(ctx context.Context, groupID string) ([]da
 			name,
 			type,
 			opening_balance,
+			fx_markup_percent,
 			color,
 			icon,
 			created_at,
@@ -442,9 +455,16 @@ func (s *ExpenseService) CreateExpense(ctx context.Context, groupID string, crea
 	if err != nil {
 		return nil, err
 	}
-	baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(ctx, req.Amount, currencyCode, baseCurrency, occurredOn)
+	fxMarkupPercent, err := s.fxMarkupForAccount(ctx, groupID, accountID, false)
 	if err != nil {
 		return nil, err
+	}
+	baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(ctx, req.Amount, currencyCode, baseCurrency, occurredOn, fxMarkupPercent)
+	if err != nil {
+		return nil, err
+	}
+	if currencyCode != baseCurrency {
+		metadata["fxMarkupPercent"] = fxMarkupPercent
 	}
 
 	id, err := uuid.GenerateUUID()
@@ -633,7 +653,11 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 	if err != nil {
 		return nil, err
 	}
-	baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(ctx, next.Amount, next.Currency, baseCurrency, next.OccurredOn)
+	fxMarkupPercent, err := s.fxMarkupForAccount(ctx, groupID, next.AccountID, true)
+	if err != nil {
+		return nil, err
+	}
+	baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(ctx, next.Amount, next.Currency, baseCurrency, next.OccurredOn, fxMarkupPercent)
 	if err != nil {
 		return nil, err
 	}
@@ -641,6 +665,10 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 	next.BaseCurrency = baseCurrency
 	next.FxRate = fxRate
 	next.FxRateDate = fxRateDate
+	next.Metadata = normalizeMetadata(next.Metadata)
+	if next.Currency != baseCurrency {
+		next.Metadata["fxMarkupPercent"] = fxMarkupPercent
+	}
 
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Table((dao.ExpenseEntry{}).TableName()).
@@ -658,6 +686,7 @@ func (s *ExpenseService) UpdateExpense(ctx context.Context, groupID string, tran
 				"occurred_on":   next.OccurredOn,
 				"merchant":      next.Merchant,
 				"note":          next.Note,
+				"metadata":      next.Metadata,
 				"updated_at":    next.UpdatedAt,
 			})
 		if result.Error != nil {
@@ -1060,12 +1089,50 @@ func (s *ExpenseService) resolveUserBaseCurrency(ctx context.Context, userID str
 	return code, nil
 }
 
+func normalizeFXMarkupPercent(value float64) (float64, error) {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+		return 0, fmt.Errorf("FX markup percent must be between 0 and 100")
+	}
+	return math.Round(value*1000) / 1000, nil
+}
+
+func (s *ExpenseService) fxMarkupForAccount(ctx context.Context, groupID string, accountID string, includeInactive bool) (float64, error) {
+	if s.DB == nil {
+		return DefaultFXMarkupPercent, nil
+	}
+	activeClause := "and deleted_at is null"
+	if includeInactive {
+		activeClause = ""
+	}
+
+	account := struct {
+		ID              string
+		FXMarkupPercent *float64 `gorm:"column:fx_markup_percent"`
+	}{}
+	if err := s.DB.WithContext(ctx).Raw(fmt.Sprintf(`
+		select id::text as id, fx_markup_percent
+		from %s
+		where id = ?::uuid and group_id = ?::uuid %s
+		limit 1
+	`, dao.QualifiedTable("expense_accounts"), activeClause), strings.TrimSpace(accountID), strings.TrimSpace(groupID)).Scan(&account).Error; err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(account.ID) == "" {
+		return 0, fmt.Errorf("account not found")
+	}
+	if account.FXMarkupPercent == nil {
+		return DefaultFXMarkupPercent, nil
+	}
+	return normalizeFXMarkupPercent(*account.FXMarkupPercent)
+}
+
 func (s *ExpenseService) convertToBaseAmount(
 	ctx context.Context,
 	amount int,
 	entryCurrency string,
 	baseCurrency string,
 	occurredOn string,
+	fxMarkupPercent float64,
 ) (baseAmount int, fxRate float64, fxRateDate string, err error) {
 	if amount <= 0 {
 		return 0, 1.0, occurredOn, nil
@@ -1088,6 +1155,10 @@ func (s *ExpenseService) convertToBaseAmount(
 	if entryCode == baseCode {
 		return amount, 1.0, normalizedDate, nil
 	}
+	fxMarkupPercent, err = normalizeFXMarkupPercent(fxMarkupPercent)
+	if err != nil {
+		return 0, 0, normalizedDate, err
+	}
 
 	if s.FX == nil {
 		return 0, 0, normalizedDate, fmt.Errorf("fx conversion unavailable for %s to %s", entryCode, baseCode)
@@ -1101,6 +1172,9 @@ func (s *ExpenseService) convertToBaseAmount(
 		return 0, 0, normalizedDate, fmt.Errorf("resolve fx rate %s to %s: invalid rate", entryCode, baseCode)
 	}
 
+	// Keep the effective rate with the entry so reports, syncing, and the UI all
+	// use the same conservative estimate instead of reapplying the markup later.
+	rate = rate * (1 + fxMarkupPercent/100)
 	converted := int(math.Round(float64(amount) * rate))
 	if converted < 0 {
 		converted = 0
@@ -1129,6 +1203,7 @@ func (s *ExpenseService) prepareSyncedEntryFX(
 		baseCode = "SGD"
 	}
 	entry.Currency = entryCurrency
+	entry.Metadata = normalizeMetadata(entry.Metadata)
 
 	storedBaseCode, baseCodeErr := normalizeCurrencyCode(entry.BaseCurrency)
 	_, rateDateErr := normalizeDate(entry.FxRateDate)
@@ -1146,12 +1221,17 @@ func (s *ExpenseService) prepareSyncedEntryFX(
 		return entry, nil
 	}
 
+	fxMarkupPercent, err := s.fxMarkupForAccount(ctx, entry.GroupID, entry.AccountID, true)
+	if err != nil {
+		return entry, err
+	}
 	baseAmount, fxRate, fxRateDate, err := s.convertToBaseAmount(
 		ctx,
 		entry.Amount,
 		entryCurrency,
 		baseCode,
 		entry.OccurredOn,
+		fxMarkupPercent,
 	)
 	if err != nil {
 		return entry, err
@@ -1160,6 +1240,9 @@ func (s *ExpenseService) prepareSyncedEntryFX(
 	entry.BaseCurrency = baseCode
 	entry.FxRate = fxRate
 	entry.FxRateDate = fxRateDate
+	if entryCurrency != baseCode {
+		entry.Metadata["fxMarkupPercent"] = fxMarkupPercent
+	}
 	return entry, nil
 }
 
@@ -1281,6 +1364,7 @@ func (s *ExpenseService) findOrCreateAccountByRef(ctx context.Context, groupID s
 			name,
 			type,
 			opening_balance,
+			fx_markup_percent,
 			color,
 			icon,
 			created_at,

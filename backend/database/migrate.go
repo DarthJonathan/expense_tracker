@@ -65,6 +65,20 @@ func Migrate(db *gorm.DB) error {
 		fmt.Sprintf(`alter table %s
 			add column if not exists base_currency text not null default 'SGD'`,
 			dao.QualifiedTable("expense_users")),
+		fmt.Sprintf(`alter table %s
+			add column if not exists fx_markup_percent numeric(6,3) not null default 3.5`,
+			tables["accounts"]),
+		fmt.Sprintf(`update %s
+			set fx_markup_percent = 3.5
+			where fx_markup_percent is null or fx_markup_percent < 0 or fx_markup_percent > 100`,
+			tables["accounts"]),
+		fmt.Sprintf(`alter table %s
+			drop constraint if exists expense_accounts_fx_markup_percent_check`,
+			tables["accounts"]),
+		fmt.Sprintf(`alter table %s
+			add constraint expense_accounts_fx_markup_percent_check
+			check (fx_markup_percent >= 0 and fx_markup_percent <= 100)`,
+			tables["accounts"]),
 		fmt.Sprintf(`update %s u
 			set group_id = g.id
 			from (

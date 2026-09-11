@@ -1216,6 +1216,11 @@
 		return normalizeCurrencyCode(entry.currency) !== baseCurrency;
 	}
 
+	function fxRateLabel(entry: LedgerEntry): string {
+		const markup = Number(entry.metadata?.fxMarkupPercent);
+		return Number.isFinite(markup) && markup > 0 ? `FX rate (incl. ${markup}% buffer)` : 'FX rate';
+	}
+
 	function transactionBaseListAmount(entry: LedgerEntry): string {
 		const amount = entryAmountInBaseCurrency(entry, baseCurrency);
 		if (amount <= 0 && entry.amount !== 0) return 'FX pending';
@@ -2428,7 +2433,7 @@ function getEntryCategoryOptions(
 								<strong>{transactionBaseAmount(selectedTransaction)}</strong>
 							</div>
 							<div class="transaction-detail-row">
-								<span>FX rate</span>
+								<span>{fxRateLabel(selectedTransaction)}</span>
 								<strong>{selectedTransaction.fxRate > 0 ? selectedTransaction.fxRate.toFixed(6) : 'Pending'}</strong>
 							</div>
 							<div class="transaction-detail-row">
@@ -2587,7 +2592,7 @@ function getEntryCategoryOptions(
 							<span style={`--swatch:${account.color}`}></span>
 							<div>
 								<strong>{accountEmoji(account)} {account.name}</strong>
-								<small>{account.type} · {isActive(account) ? 'Active' : 'Inactive'}</small>
+								<small>{account.type} · FX {account.fxMarkupPercent}% · {isActive(account) ? 'Active' : 'Inactive'}</small>
 							</div>
 							<b>{currency(accountMonthlyBalance(account.id))}</b>
 						</button>
@@ -2601,6 +2606,10 @@ function getEntryCategoryOptions(
 						<AppSelect ariaLabel="Account type" bind:value={accountFormType} name="type" options={accountTypeOptions} />
 						<input name="openingBalance" type="text" inputmode="decimal" placeholder="Opening" on:input={formatAmountInput} />
 					</div>
+					<label>
+						FX markup (%)
+						<input name="fxMarkupPercent" type="number" min="0" max="100" step="0.1" value="3.5" inputmode="decimal" />
+					</label>
 					<input name="icon" placeholder="Emoji icon (e.g. 🏦)" />
 					<input name="color" type="color" value="#2563eb" title="Account color" />
 					<button type="submit">Add account</button>
@@ -2625,6 +2634,10 @@ function getEntryCategoryOptions(
 									on:input={formatAmountInput}
 								/>
 							</div>
+							<label>
+								FX markup (%)
+								<input name="fxMarkupPercent" type="number" min="0" max="100" step="0.1" value={selectedSettingsAccount.fxMarkupPercent} inputmode="decimal" />
+							</label>
 							<input name="icon" value={selectedSettingsAccount.icon} placeholder="Emoji icon (e.g. 🏦)" />
 							<input name="color" type="color" value={selectedSettingsAccount.color} title="Account color" />
 							<label class="account-status-toggle">
@@ -3140,7 +3153,7 @@ function getEntryCategoryOptions(
 							</div>
 							<div>
 								<strong>{account.name}</strong>
-								<small>{account.type} · This month</small>
+								<small>{account.type} · FX {account.fxMarkupPercent}% · This month</small>
 							</div>
 							<b>{currency(accountMonthlyBalance(account.id))}</b>
 						</button>
@@ -3153,6 +3166,10 @@ function getEntryCategoryOptions(
 									<AppSelect ariaLabel="Account type" bind:value={accountFormType} name="type" options={accountTypeOptions} />
 									<input name="openingBalance" type="text" inputmode="decimal" placeholder="Opening" on:input={formatAmountInput} />
 								</div>
+								<label>
+									FX markup (%)
+									<input name="fxMarkupPercent" type="number" min="0" max="100" step="0.1" value="3.5" inputmode="decimal" />
+								</label>
 						<input name="icon" placeholder="Emoji icon (e.g. 🏦)" />
 						<input name="color" type="color" value="#2563eb" title="Account color" />
 						<div class="desktop-inline-wizard-actions">
@@ -3446,7 +3463,7 @@ function getEntryCategoryOptions(
 										<strong>{transactionBaseAmount(selectedTransaction)}</strong>
 									</div>
 									<div class="transaction-detail-row">
-										<span>FX rate</span>
+										<span>{fxRateLabel(selectedTransaction)}</span>
 										<strong>{selectedTransaction.fxRate > 0 ? selectedTransaction.fxRate.toFixed(6) : 'Pending'}</strong>
 									</div>
 									<div class="transaction-detail-row">
@@ -3526,7 +3543,7 @@ function getEntryCategoryOptions(
 										</div>
 										<div>
 											<strong>{account.name}</strong>
-											<small>{account.type} · {isActive(account) ? 'Active' : 'Inactive'}</small>
+											<small>{account.type} · FX {account.fxMarkupPercent}% · {isActive(account) ? 'Active' : 'Inactive'}</small>
 										</div>
 										<b class:desktop-row-action={selectedSettingsAccountId === account.id}>
 											{selectedSettingsAccountId === account.id ? 'Close' : currency(accountMonthlyBalance(account.id))}
@@ -3558,6 +3575,10 @@ function getEntryCategoryOptions(
 															on:input={formatAmountInput}
 														/>
 													</div>
+													<label>
+														FX markup (%)
+														<input name="fxMarkupPercent" type="number" min="0" max="100" step="0.1" value={account.fxMarkupPercent} inputmode="decimal" />
+													</label>
 													<input name="icon" value={account.icon} placeholder="Emoji icon (e.g. 🏦)" />
 													<input name="color" type="color" value={account.color} title="Account color" />
 													<label class="account-status-toggle">
@@ -3585,6 +3606,10 @@ function getEntryCategoryOptions(
 									<AppSelect ariaLabel="Account type" bind:value={accountFormType} name="type" options={accountTypeOptions} />
 									<input name="openingBalance" type="text" inputmode="decimal" placeholder="Opening" on:input={formatAmountInput} />
 								</div>
+								<label>
+									FX markup (%)
+									<input name="fxMarkupPercent" type="number" min="0" max="100" step="0.1" value="3.5" inputmode="decimal" />
+								</label>
 								<input name="icon" placeholder="Emoji icon (e.g. 🏦)" />
 								<input name="color" type="color" value="#2563eb" title="Account color" />
 								<div class="desktop-inline-wizard-actions">

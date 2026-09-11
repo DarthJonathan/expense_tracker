@@ -33,6 +33,7 @@ create table if not exists spendit.expense_accounts (
 	name text not null,
 	type text not null check (type in ('cash', 'bank', 'card', 'wallet')),
 	opening_balance integer not null default 0,
+	fx_markup_percent numeric(6,3) not null default 3.5 check (fx_markup_percent >= 0 and fx_markup_percent <= 100),
 	color text not null default '#4b5745',
 	icon text not null default '🏦',
 	created_at timestamptz not null default now(),

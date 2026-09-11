@@ -2,6 +2,7 @@ import type { Account, Category, Group } from './types';
 import { isoNow, makeId } from './utils';
 
 export const DEFAULT_COLORS = ['#e7d24e', '#4b5745', '#df704f', '#c5caba', '#171a15', '#8f9984'];
+export const DEFAULT_FX_MARKUP_PERCENT = 3.5;
 
 export function createDefaultGroup(): Group {
 	const now = isoNow();
@@ -26,6 +27,7 @@ export function createDefaultAccounts(groupId: string): Account[] {
 			name: 'Cash',
 			type: 'cash',
 			openingBalance: 0,
+			fxMarkupPercent: DEFAULT_FX_MARKUP_PERCENT,
 			color: '#e7d24e',
 			icon: '💵',
 			createdAt: now,
@@ -38,6 +40,7 @@ export function createDefaultAccounts(groupId: string): Account[] {
 			name: 'Bank',
 			type: 'bank',
 			openingBalance: 0,
+			fxMarkupPercent: DEFAULT_FX_MARKUP_PERCENT,
 			color: '#4b5745',
 			icon: '🏦',
 			createdAt: now,
@@ -50,6 +53,7 @@ export function createDefaultAccounts(groupId: string): Account[] {
 			name: 'Card',
 			type: 'card',
 			openingBalance: 0,
+			fxMarkupPercent: DEFAULT_FX_MARKUP_PERCENT,
 			color: '#df704f',
 			icon: '💳',
 			createdAt: now,

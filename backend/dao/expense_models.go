@@ -15,16 +15,17 @@ type ExpenseGroup struct {
 func (ExpenseGroup) TableName() string { return QualifiedTable("expense_groups") }
 
 type ExpenseAccount struct {
-	ID             string     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
-	GroupID        string     `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
-	Name           string     `gorm:"column:name;type:text;not null" json:"name"`
-	Type           string     `gorm:"column:type;type:text;not null;check:type in ('cash','bank','card','wallet')" json:"type"`
-	OpeningBalance int        `gorm:"column:opening_balance;not null;default:0" json:"openingBalance"`
-	Color          string     `gorm:"column:color;type:text;not null;default:'#4b5745'" json:"color"`
-	Icon           string     `gorm:"column:icon;type:text;not null;default:'🏦'" json:"icon"`
-	CreatedAt      time.Time  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
-	UpdatedAt      time.Time  `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
-	DeletedAt      *time.Time `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
+	ID              string     `gorm:"column:id;type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	GroupID         string     `gorm:"column:group_id;type:uuid;not null;index" json:"groupId"`
+	Name            string     `gorm:"column:name;type:text;not null" json:"name"`
+	Type            string     `gorm:"column:type;type:text;not null;check:type in ('cash','bank','card','wallet')" json:"type"`
+	OpeningBalance  int        `gorm:"column:opening_balance;not null;default:0" json:"openingBalance"`
+	FXMarkupPercent *float64   `gorm:"column:fx_markup_percent;type:numeric(6,3);not null;default:3.5" json:"fxMarkupPercent"`
+	Color           string     `gorm:"column:color;type:text;not null;default:'#4b5745'" json:"color"`
+	Icon            string     `gorm:"column:icon;type:text;not null;default:'🏦'" json:"icon"`
+	CreatedAt       time.Time  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
+	DeletedAt       *time.Time `gorm:"column:deleted_at" json:"deletedAt,omitempty"`
 }
 
 func (ExpenseAccount) TableName() string { return QualifiedTable("expense_accounts") }
