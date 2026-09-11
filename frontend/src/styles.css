@@ -518,6 +518,18 @@ form {
 	padding: 0.65rem 0.8rem;
 }
 
+.transaction-table-card .mobile-transaction-controls .mobile-transaction-month-trigger {
+	background: transparent;
+	border: 0;
+	border-radius: 0;
+	box-shadow: none;
+	color: var(--ink);
+	flex: 1;
+	font-size: 0.82rem;
+	min-width: 0;
+	padding: 0;
+}
+
 .mobile-transaction-filter span {
 	color: var(--ink);
 	font-size: 0.82rem;

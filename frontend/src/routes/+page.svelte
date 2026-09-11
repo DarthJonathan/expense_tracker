@@ -80,6 +80,7 @@
 	let mobileTransactionGrain: PeriodGrain = 'month';
 	let mobileTransactionViewFilter: TransactionViewFilter = 'all';
 	let mobileTransactionsScrollTop = 0;
+	let lastMobileTransactionPeriodKey = mobileTransactionPeriodKey;
 	let restoreMobileTransactionsScroll = false;
 	let remoteSearchResults: LedgerEntry[] | null = null;
 	let remoteSearchError = '';
@@ -105,6 +106,7 @@
 	let transactionEditCurrency = 'SGD';
 	let transactionEditAmount = '';
 	let transactionEditDate = todayInputValue();
+	let transactionEditDateValue: DateValue = parseDate(todayInputValue());
 	let transactionEditMerchant = '';
 	let transactionEditNote = '';
 	let transactionDeleteConfirmOpen = false;
@@ -405,6 +407,15 @@
 		transactionViewFilterOptions.find((option) => option.value === mobileTransactionViewFilter)?.label ?? 'All transactions';
 	$: mobileTransactionEmptyLabel =
 		mobileTransactionViewFilter === 'all' ? 'transactions' : selectedMobileTransactionViewLabel.toLowerCase();
+	$: if (mobileTransactionPeriodKey !== lastMobileTransactionPeriodKey) {
+		lastMobileTransactionPeriodKey = mobileTransactionPeriodKey;
+		if (activeScreen === 'transactions') {
+			void (async () => {
+				await tick();
+				if (transactionsScreenEl) transactionsScreenEl.scrollTop = 0;
+			})();
+		}
+	}
 	$: searchPageResults = remoteSearchResults ?? filteredTransactions;
 	$: topCategories = (currentSummary?.categories ?? []).filter((item) => Math.abs(item.net) > 0).slice(0, 4);
 	$: homeTiles = topCategories.length
@@ -1001,6 +1012,7 @@
 		transactionEditCurrency = normalizeCurrencyCode(selectedTransaction.currency);
 		transactionEditAmount = amountFromCents(selectedTransaction.amount);
 		transactionEditDate = selectedTransaction.occurredOn;
+		transactionEditDateValue = parseDate(selectedTransaction.occurredOn);
 		transactionEditMerchant = selectedTransaction.merchant;
 		transactionEditNote = selectedTransaction.note;
 	}
@@ -2155,7 +2167,16 @@ function getEntryCategoryOptions(
 				<div class="mobile-transaction-controls">
 					{#if mobileTransactionFilterLabel}
 						<div class="mobile-transaction-filter">
-							<span>{mobileTransactionFilterLabel}</span>
+							{#if mobileTransactionGrain === 'month'}
+								<AppSelect
+									ariaLabel="Transaction month"
+									bind:value={mobileTransactionPeriodKey}
+									options={transactionMonthOptions}
+									triggerClass="mobile-transaction-month-trigger"
+								/>
+							{:else}
+								<span>{mobileTransactionFilterLabel}</span>
+							{/if}
 							{#if mobileTransactionCategoryId}
 								<button type="button" on:click={clearMobileTransactionFilter} aria-label="Clear category filter">×</button>
 							{/if}
@@ -2315,7 +2336,61 @@ function getEntryCategoryOptions(
 						<div class="field-grid transaction-date-note-grid">
 							<label>
 								Date
-								<input bind:value={transactionEditDate} name="occurredOn" type="date" required />
+								<DatePicker.Root bind:value={transactionEditDateValue} weekdayFormat="short" fixedWeeks={true}>
+									<div class="date-picker-field">
+										<DatePicker.Input name="occurredOn" class="date-picker-input">
+											{#snippet children({ segments })}
+												{#each segments as segment, index (`${segment.part}-${index}`)}
+													{#if segment.part === 'literal'}
+														<span class="date-picker-literal">{segment.value}</span>
+													{:else}
+														<DatePicker.Segment part={segment.part} class="date-picker-segment">
+															{segment.value}
+														</DatePicker.Segment>
+													{/if}
+												{/each}
+											{/snippet}
+										</DatePicker.Input>
+										<DatePicker.Trigger class="date-picker-trigger" aria-label="Open calendar">
+											<ChevronDown size={18} />
+										</DatePicker.Trigger>
+									</div>
+									<DatePicker.Portal>
+										<DatePicker.Content class="date-picker-content" sideOffset={8} align="end">
+											<DatePicker.Calendar class="date-picker-calendar">
+												{#snippet children({ months, weekdays })}
+													<DatePicker.Header class="date-picker-calendar-header">
+														<DatePicker.PrevButton class="date-picker-nav-button" aria-label="Previous month">‹</DatePicker.PrevButton>
+														<DatePicker.Heading class="date-picker-heading" />
+														<DatePicker.NextButton class="date-picker-nav-button" aria-label="Next month">›</DatePicker.NextButton>
+													</DatePicker.Header>
+													{#each months as month}
+														<DatePicker.Grid class="date-picker-grid">
+															<DatePicker.GridHead>
+																<DatePicker.GridRow class="date-picker-grid-row">
+																	{#each weekdays as day}
+																		<DatePicker.HeadCell class="date-picker-head-cell">{day}</DatePicker.HeadCell>
+																	{/each}
+																</DatePicker.GridRow>
+															</DatePicker.GridHead>
+															<DatePicker.GridBody>
+																{#each month.weeks as weekDates}
+																	<DatePicker.GridRow class="date-picker-grid-row">
+																		{#each weekDates as date}
+																			<DatePicker.Cell {date} month={month.value}>
+																				<DatePicker.Day class="date-picker-day" />
+																			</DatePicker.Cell>
+																		{/each}
+																	</DatePicker.GridRow>
+																{/each}
+															</DatePicker.GridBody>
+														</DatePicker.Grid>
+													{/each}
+												{/snippet}
+											</DatePicker.Calendar>
+										</DatePicker.Content>
+									</DatePicker.Portal>
+								</DatePicker.Root>
 							</label>
 							<label>
 								Note
