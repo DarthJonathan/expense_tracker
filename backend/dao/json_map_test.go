@@ -1,6 +1,7 @@
 package dao
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -15,6 +16,13 @@ func TestJSONMapDatabaseRoundTrip(t *testing.T) {
 	stored, err := want.Value()
 	if err != nil {
 		t.Fatalf("serialize metadata: %v", err)
+	}
+	serialized, ok := stored.(string)
+	if !ok {
+		t.Fatalf("serialized metadata type = %T, want string", stored)
+	}
+	if !json.Valid([]byte(serialized)) {
+		t.Fatalf("serialized metadata is not valid JSON: %q", serialized)
 	}
 
 	var got JSONMap
@@ -32,7 +40,7 @@ func TestJSONMapNilUsesEmptyObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serialize nil metadata: %v", err)
 	}
-	if string(stored.([]byte)) != "{}" {
+	if stored.(string) != "{}" {
 		t.Fatalf("serialized nil metadata = %q, want {}", stored)
 	}
 }

@@ -15,14 +15,16 @@ type JSONMap map[string]any
 
 func (value JSONMap) Value() (driver.Value, error) {
 	if len(value) == 0 {
-		return []byte("{}"), nil
+		return "{}", nil
 	}
 
 	encoded, err := json.Marshal(map[string]any(value))
 	if err != nil {
 		return nil, fmt.Errorf("marshal JSON map: %w", err)
 	}
-	return encoded, nil
+	// PostgreSQL expects JSON text for a jsonb parameter. Returning []byte makes
+	// pgx bind it as binary data, which fails when the column is cast to jsonb.
+	return string(encoded), nil
 }
 
 func (value *JSONMap) Scan(source any) error {
