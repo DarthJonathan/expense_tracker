@@ -2043,6 +2043,138 @@ body {
 	width: 100%;
 }
 
+.spending-changes-card {
+	background: var(--panel);
+	border: 1px solid var(--line);
+	border-radius: var(--radius-md);
+	margin: 1.6rem 0 1rem;
+	overflow: hidden;
+	padding: 1rem;
+}
+
+.spending-changes-head h2 {
+	font-size: 1rem;
+	margin: 0;
+}
+
+.spending-changes-head p {
+	color: var(--muted);
+	font-size: 0.76rem;
+	font-weight: 700;
+	line-height: 1.4;
+	margin: 0.25rem 0 0;
+}
+
+.spending-changes-scroll {
+	overflow-x: auto;
+	padding-bottom: 0.15rem;
+	-webkit-overflow-scrolling: touch;
+}
+
+.spending-changes-table {
+	border-collapse: collapse;
+	margin-top: 0.75rem;
+	min-width: 43rem;
+	width: 100%;
+}
+
+.spending-changes-table th,
+.spending-changes-table td {
+	border-top: 1px solid var(--line);
+	padding: 0.72rem 0.6rem;
+	text-align: right;
+	vertical-align: middle;
+}
+
+.spending-changes-table thead th {
+	border-top: 0;
+	color: var(--muted);
+	font-size: 0.7rem;
+	font-weight: 900;
+	text-transform: uppercase;
+}
+
+.spending-changes-table th:first-child {
+	left: 0;
+	min-width: 10.5rem;
+	padding-left: 0.25rem;
+	position: sticky;
+	text-align: left;
+	z-index: 1;
+}
+
+.spending-changes-table thead th:first-child {
+	background: var(--panel);
+}
+
+.spending-change-category {
+	align-items: center;
+	display: flex;
+	gap: 0.6rem;
+}
+
+.spending-change-category > span {
+	background: var(--swatch);
+	border-radius: 999px;
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--swatch) 16%, transparent);
+	flex: 0 0 auto;
+	height: 0.7rem;
+	width: 0.7rem;
+}
+
+.spending-change-category > div {
+	display: grid;
+	gap: 0.18rem;
+}
+
+.spending-changes-table tbody th strong,
+.spending-changes-table td strong {
+	color: var(--ink);
+	font-size: 0.82rem;
+}
+
+.spending-changes-table tbody th small,
+.spending-changes-table td small {
+	color: var(--muted);
+	font-size: 0.68rem;
+	font-weight: 800;
+	white-space: nowrap;
+}
+
+.spending-changes-table td strong {
+	display: block;
+	font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+	white-space: nowrap;
+}
+
+.spending-changes-table td small {
+	display: block;
+	margin-top: 0.18rem;
+}
+
+.spending-changes-table td.increase strong,
+.spending-changes-table td.increase small {
+	color: #9c332b;
+}
+
+.spending-changes-table td.decrease strong,
+.spending-changes-table td.decrease small {
+	color: #2e6b37;
+}
+
+.spending-changes-table .total-change-row {
+	background: color-mix(in srgb, var(--primary) 7%, var(--panel));
+}
+
+.spending-changes-table .total-change-row th {
+	background: color-mix(in srgb, var(--primary) 7%, var(--panel));
+}
+
+.spending-changes-table .total-change-row th strong,
+.spending-changes-table .total-change-row td strong {
+	font-weight: 950;
+}
+
 @media (min-width: 768px) {
 	body {
 		background: var(--paper);
@@ -2363,6 +2495,14 @@ body {
 		display: grid;
 		gap: 1rem;
 		grid-template-columns: 1fr;
+	}
+
+	.desktop-card.spending-changes-card {
+		margin: 0;
+	}
+
+	.full-card {
+		grid-column: 1 / -1;
 	}
 
 	.desktop-page-grid {

@@ -9,6 +9,23 @@ import type {
 } from './types';
 import { entryAmountInBaseCurrency, isActive } from './utils';
 
+export interface SpendingChangeValue {
+	current: number;
+	previous: number;
+	delta: number;
+	percent: number | null;
+}
+
+export interface SpendingChangeRow {
+	categoryId: string | null;
+	categoryName: string;
+	categoryColor: string;
+	monthToDate: number;
+	day: SpendingChangeValue;
+	month: SpendingChangeValue;
+	year: SpendingChangeValue;
+}
+
 export function periodKey(dateValue: string, grain: PeriodGrain): string {
 	const date = new Date(`${dateValue}T00:00:00`);
 
@@ -145,4 +162,129 @@ export function buildPeriodSummaries(
 			return summary;
 		})
 		.reverse();
+}
+
+/**
+ * Builds expense comparisons as of a local calendar date. Month and year
+ * comparisons use equivalent elapsed ranges so partial periods stay useful.
+ */
+export function buildSpendingChanges(
+	categories: Category[],
+	entries: LedgerEntry[],
+	asOfDate: string,
+	baseCurrency = 'SGD'
+): SpendingChangeRow[] {
+	const asOf = parseLocalDate(asOfDate);
+	const currentDay = dateRange(asOf, asOf);
+	const previousDayDate = addLocalDays(asOf, -1);
+	const previousDay = dateRange(previousDayDate, previousDayDate);
+
+	const currentMonth = dateRange(new Date(asOf.getFullYear(), asOf.getMonth(), 1), asOf);
+	const previousMonthStart = new Date(asOf.getFullYear(), asOf.getMonth() - 1, 1);
+	const previousMonthEnd = new Date(
+		previousMonthStart.getFullYear(),
+		previousMonthStart.getMonth(),
+		Math.min(asOf.getDate(), daysInMonth(previousMonthStart.getFullYear(), previousMonthStart.getMonth()))
+	);
+	const previousMonth = dateRange(previousMonthStart, previousMonthEnd);
+
+	const currentYear = dateRange(new Date(asOf.getFullYear(), 0, 1), asOf);
+	const previousYearEnd = new Date(
+		asOf.getFullYear() - 1,
+		asOf.getMonth(),
+		Math.min(asOf.getDate(), daysInMonth(asOf.getFullYear() - 1, asOf.getMonth()))
+	);
+	const previousYear = dateRange(new Date(asOf.getFullYear() - 1, 0, 1), previousYearEnd);
+
+	const expenseCategories = categories.filter((category) => category.type === 'expense' && isActive(category));
+	const expenseCategoryIds = new Set(expenseCategories.map((category) => category.id));
+	const amounts = new Map<string, number[]>();
+
+	for (const category of expenseCategories) {
+		amounts.set(category.id, [0, 0, 0, 0, 0, 0]);
+	}
+
+	for (const entry of entries) {
+		if (!isActive(entry) || entry.type !== 'expense' || !expenseCategoryIds.has(entry.categoryId)) continue;
+		const amount = entryAmountInBaseCurrency(entry, baseCurrency);
+		const totals = amounts.get(entry.categoryId);
+		if (!totals) continue;
+
+		if (inRange(entry.occurredOn, currentDay)) totals[0] += amount;
+		if (inRange(entry.occurredOn, previousDay)) totals[1] += amount;
+		if (inRange(entry.occurredOn, currentMonth)) totals[2] += amount;
+		if (inRange(entry.occurredOn, previousMonth)) totals[3] += amount;
+		if (inRange(entry.occurredOn, currentYear)) totals[4] += amount;
+		if (inRange(entry.occurredOn, previousYear)) totals[5] += amount;
+	}
+
+	const rows = expenseCategories.map((category) => {
+		const totals = amounts.get(category.id) ?? [0, 0, 0, 0, 0, 0];
+		return {
+			categoryId: category.id,
+			categoryName: category.name,
+			categoryColor: category.color,
+			monthToDate: totals[2],
+			day: changeValue(totals[0], totals[1]),
+			month: changeValue(totals[2], totals[3]),
+			year: changeValue(totals[4], totals[5])
+		};
+	});
+
+	const combinedTotals = [0, 0, 0, 0, 0, 0];
+	for (const categoryTotals of amounts.values()) {
+		categoryTotals.forEach((amount, index) => (combinedTotals[index] += amount));
+	}
+	return [
+		{
+			categoryId: null,
+			categoryName: 'Total expense',
+			categoryColor: '#64748b',
+			monthToDate: combinedTotals[2],
+			day: changeValue(combinedTotals[0], combinedTotals[1]),
+			month: changeValue(combinedTotals[2], combinedTotals[3]),
+			year: changeValue(combinedTotals[4], combinedTotals[5])
+		},
+		...rows
+	];
+}
+
+type DateRange = { start: string; end: string };
+
+function changeValue(current: number, previous: number): SpendingChangeValue {
+	const delta = current - previous;
+	return {
+		current,
+		previous,
+		delta,
+		percent: previous === 0 ? (current === 0 ? 0 : null) : (delta / previous) * 100
+	};
+}
+
+function parseLocalDate(value: string): Date {
+	const [year, month, day] = value.split('-').map(Number);
+	return new Date(year, month - 1, day);
+}
+
+function addLocalDays(date: Date, amount: number): Date {
+	return new Date(date.getFullYear(), date.getMonth(), date.getDate() + amount);
+}
+
+function daysInMonth(year: number, zeroBasedMonth: number): number {
+	return new Date(year, zeroBasedMonth + 1, 0).getDate();
+}
+
+function dateRange(start: Date, end: Date): DateRange {
+	return { start: localDateValue(start), end: localDateValue(end) };
+}
+
+function localDateValue(date: Date): string {
+	const year = String(date.getFullYear()).padStart(4, '0');
+	const month = String(date.getMonth() + 1).padStart(2, '0');
+	const day = String(date.getDate()).padStart(2, '0');
+	return `${year}-${month}-${day}`;
+}
+
+function inRange(date: string, range: DateRange): boolean {
+	return date >= range.start && date <= range.end;
 }

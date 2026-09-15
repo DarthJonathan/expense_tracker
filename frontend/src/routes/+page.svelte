@@ -22,7 +22,14 @@
 	import StatementIngestion from '$lib/components/StatementIngestion.svelte';
 	import { onMount, tick } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { buildPeriodSummaries, getCurrentBalance, periodKey, readablePeriod } from '$lib/reporting';
+	import {
+		buildPeriodSummaries,
+		buildSpendingChanges,
+		getCurrentBalance,
+		periodKey,
+		readablePeriod,
+		type SpendingChangeValue
+	} from '$lib/reporting';
 	import { finance } from '$lib/finance';
 	import { clearSession, generateApiKey, getStoredSession, login, register, type APIKeyData, type AuthSession } from '$lib/auth';
 	import { patchSettings } from '$lib/db';
@@ -338,6 +345,7 @@
 		totals.set(entry.categoryId, (totals.get(entry.categoryId) ?? 0) + entryAmountInBaseCurrency(entry, baseCurrency));
 		return totals;
 	}, new Map<string, number>());
+	$: spendingChanges = buildSpendingChanges(categories, entries, todayInputValue(), baseCurrency);
 	$: homeHouseholdEntries = homeBalanceEntries.filter((entry) => {
 		const category = categoryById.get(entry.categoryId);
 		return normalizeCategoryScope(category?.scope) === 'household';
@@ -1203,6 +1211,18 @@
 		return formatCurrency(amountInCents, currencyCode);
 	}
 
+	function changeAmount(change: SpendingChangeValue): string {
+		if (change.delta === 0) return currency(0);
+		return `${change.delta > 0 ? '+' : '-'}${currency(Math.abs(change.delta))}`;
+	}
+
+	function changePercent(change: SpendingChangeValue): string {
+		if (change.percent === null) return 'New';
+		if (change.percent === 0) return '0%';
+		const rounded = Math.abs(change.percent) >= 100 ? Math.round(change.percent) : Math.round(change.percent * 10) / 10;
+		return `${rounded > 0 ? '+' : ''}${rounded}%`;
+	}
+
 	function transactionAmount(entry: LedgerEntry): string {
 		return currency(entry.amount, normalizeCurrencyCode(entry.currency));
 	}
@@ -1885,6 +1905,43 @@ function getEntryCategoryOptions(
 						</div>
 					</article>
 				{/each}
+			</section>
+
+			<section class="spending-changes-card" aria-labelledby="mobile-spending-changes-heading">
+				<div class="spending-changes-head">
+					<h2 id="mobile-spending-changes-heading">Spending changes</h2>
+					<p>MTD and YTD compare the same elapsed time in the prior period.</p>
+				</div>
+				<div class="spending-changes-scroll">
+					<table class="spending-changes-table">
+						<thead>
+							<tr>
+								<th scope="col">Category</th>
+								<th scope="col">Day on day</th>
+								<th scope="col">Month on month</th>
+								<th scope="col">Year on year</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each spendingChanges as row}
+								<tr class:total-change-row={row.categoryId === null}>
+									<th scope="row">
+										<div class="spending-change-category">
+											<span style={`--swatch:${row.categoryColor}`}></span>
+											<div><strong>{row.categoryName}</strong><small>MTD {currency(row.monthToDate)}</small></div>
+										</div>
+									</th>
+									{#each [row.day, row.month, row.year] as change}
+										<td class:increase={change.delta > 0} class:decrease={change.delta < 0}>
+											<strong>{changeAmount(change)}</strong>
+											<small>{changePercent(change)}</small>
+										</td>
+									{/each}
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
 			</section>
 
 			<section class="section-heading">
@@ -3026,6 +3083,45 @@ function getEntryCategoryOptions(
 		</section>
 
 		<div class="desktop-grid">
+			<section class="desktop-card full-card spending-changes-card" aria-labelledby="desktop-spending-changes-heading">
+				<div class="desktop-card-head spending-changes-head">
+					<div>
+						<h2 id="desktop-spending-changes-heading">Spending changes</h2>
+						<p>Today vs yesterday; MTD and YTD vs the same elapsed time in the prior period</p>
+					</div>
+				</div>
+				<div class="spending-changes-scroll">
+					<table class="spending-changes-table">
+						<thead>
+							<tr>
+								<th scope="col">Category</th>
+								<th scope="col">Day on day</th>
+								<th scope="col">Month on month</th>
+								<th scope="col">Year on year</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each spendingChanges as row}
+								<tr class:total-change-row={row.categoryId === null}>
+									<th scope="row">
+										<div class="spending-change-category">
+											<span style={`--swatch:${row.categoryColor}`}></span>
+											<div><strong>{row.categoryName}</strong><small>Month to date {currency(row.monthToDate)}</small></div>
+										</div>
+									</th>
+									{#each [row.day, row.month, row.year] as change}
+										<td class:increase={change.delta > 0} class:decrease={change.delta < 0}>
+											<strong>{changeAmount(change)}</strong>
+											<small>{changePercent(change)}</small>
+										</td>
+									{/each}
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
 			<section class="desktop-card wide-card">
 				<div class="desktop-card-head">
 					<div>
