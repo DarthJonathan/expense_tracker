@@ -31,6 +31,9 @@ func NewSyncService(db *gorm.DB) *SyncService {
 }
 
 func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.SyncRequest) (*response.SyncData, error) {
+	if err := validateSyncOptions(req.Sync); err != nil {
+		return nil, err
+	}
 	clientGroupID := strings.TrimSpace(req.Settings.ActiveGroupID)
 	authUserID = strings.TrimSpace(authUserID)
 	if authUserID == "" {
@@ -45,17 +48,13 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 		if err != nil {
 			return fmt.Errorf("resolve user group: %w", err)
 		}
-		baseCurrency, err := normalizeCurrencyCode(req.Settings.BaseCurrency)
+		var storedCurrency string
+		if err := tx.Model(&dao.ExpenseUser{}).Where("id = ?::uuid", authUserID).Select("base_currency").Scan(&storedCurrency).Error; err != nil {
+			return err
+		}
+		baseCurrency, err := normalizeCurrencyCode(storedCurrency)
 		if err != nil {
 			baseCurrency = "SGD"
-		}
-		if err := tx.Model(&dao.ExpenseUser{}).
-			Where("id = ?::uuid", authUserID).
-			Updates(map[string]any{
-				"base_currency": baseCurrency,
-				"updated_at":    now,
-			}).Error; err != nil {
-			return fmt.Errorf("update base currency: %w", err)
 		}
 
 		groupID := resolution.GroupID
@@ -65,16 +64,28 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 		}
 		acceptIncoming := !(resolution.HadStoredGroup && sourceGroupID != groupID)
 
-		if acceptIncoming {
+		var touched map[string][]string
+		if acceptIncoming && (req.Sync == nil || req.Sync.Mode != "pull") {
+			touched, err = prepareSyncPush(tx, req, groupID, sourceGroupID, authUserID, result, now)
+			if err != nil {
+				return err
+			}
+			sourceGroupID = groupID
+			force := req.Sync != nil && req.Sync.Version == 3
+			for _, group := range req.Groups {
+				if err := upsertGroup(tx, group, force); err != nil {
+					return fmt.Errorf("upsert group: %w", err)
+				}
+			}
 			categorizer := NewExpenseService(tx)
 			for _, account := range filterAccountsByGroup(req.Accounts, sourceGroupID, groupID) {
-				if err := upsertAccount(tx, account); err != nil {
+				if err := upsertAccount(tx, account, force); err != nil {
 					return fmt.Errorf("upsert account %s: %w", account.ID, err)
 				}
 			}
 
 			for _, category := range filterCategoriesByGroup(req.Categories, sourceGroupID, groupID, authUserID) {
-				if err := upsertCategory(tx, category); err != nil {
+				if err := upsertCategory(tx, category, force); err != nil {
 					return fmt.Errorf("upsert category %s: %w", category.ID, err)
 				}
 			}
@@ -84,7 +95,7 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 				if err != nil {
 					return fmt.Errorf("prepare fx for entry %s: %w", entry.ID, err)
 				}
-				accepted, err := upsertEntry(tx, entry)
+				accepted, err := upsertEntry(tx, entry, force)
 				if err != nil {
 					return fmt.Errorf("upsert entry %s: %w", entry.ID, err)
 				}
@@ -108,7 +119,7 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 			}
 
 			for _, adjustment := range filterAdjustmentsByGroup(req.Adjustments, sourceGroupID, groupID) {
-				if err := upsertAdjustment(tx, adjustment); err != nil {
+				if err := upsertAdjustment(tx, adjustment, force); err != nil {
 					return fmt.Errorf("upsert adjustment %s: %w", adjustment.ID, err)
 				}
 			}
@@ -120,42 +131,60 @@ func (s *SyncService) Sync(ctx context.Context, authUserID string, req *request.
 			}
 		}
 
-		groups, err := pullGroups(tx, groupID)
-		if err != nil {
-			return fmt.Errorf("pull groups: %w", err)
-		}
+		if req.Sync == nil {
+			groups, err := pullGroups(tx, groupID)
+			if err != nil {
+				return fmt.Errorf("pull groups: %w", err)
+			}
 
-		accounts, err := pullAccounts(tx, groupID)
-		if err != nil {
-			return fmt.Errorf("pull accounts: %w", err)
-		}
+			accounts, err := pullAccounts(tx, groupID)
+			if err != nil {
+				return fmt.Errorf("pull accounts: %w", err)
+			}
 
-		categories, err := pullCategories(tx, groupID, authUserID)
-		if err != nil {
-			return fmt.Errorf("pull categories: %w", err)
-		}
+			categories, err := pullCategories(tx, groupID, authUserID)
+			if err != nil {
+				return fmt.Errorf("pull categories: %w", err)
+			}
 
-		entries, err := pullEntries(tx, groupID)
-		if err != nil {
-			return fmt.Errorf("pull entries: %w", err)
-		}
+			entries, err := pullEntries(tx, groupID)
+			if err != nil {
+				return fmt.Errorf("pull entries: %w", err)
+			}
 
-		adjustments, err := pullAdjustments(tx, groupID)
-		if err != nil {
-			return fmt.Errorf("pull adjustments: %w", err)
-		}
+			adjustments, err := pullAdjustments(tx, groupID)
+			if err != nil {
+				return fmt.Errorf("pull adjustments: %w", err)
+			}
 
-		merchants, err := pullMerchants(tx, groupID)
-		if err != nil {
-			return fmt.Errorf("pull merchants: %w", err)
-		}
+			merchants, err := pullMerchants(tx, groupID)
+			if err != nil {
+				return fmt.Errorf("pull merchants: %w", err)
+			}
 
-		result.Groups = groups
-		result.Accounts = accounts
-		result.Categories = categories
-		result.Entries = entries
-		result.Adjustments = adjustments
-		result.Merchants = merchants
+			result.Groups = groups
+			result.Accounts = accounts
+			result.Categories = categories
+			result.Entries = entries
+			result.Adjustments = adjustments
+			result.Merchants = merchants
+
+		} else {
+			result.ProtocolVersion = 2
+			if req.Sync.Version == 3 {
+				result.ProtocolVersion = 3
+			}
+			if req.Sync.Mode == "push" && req.Sync.Version == 3 {
+				if err := addAcceptedSyncRecords(tx, result, touched, groupID, authUserID); err != nil {
+					return err
+				}
+			}
+			if req.Sync.Mode == "pull" {
+				if err := pullSyncPage(tx, groupID, authUserID, req.Sync, result); err != nil {
+					return err
+				}
+			}
+		}
 		result.Settings = response.SyncSettingsData{
 			ID:            req.Settings.ID,
 			ActiveGroupID: groupID,
@@ -185,6 +214,7 @@ func (s *SyncService) resolveUserGroup(
 ) (*userGroupResolution, error) {
 	user := &dao.ExpenseUser{}
 	if err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("id = ?::uuid and deleted_at is null", authUserID).
 		First(user).Error; err != nil {
 		return nil, err
@@ -287,7 +317,7 @@ func activeGroup(groups []dao.ExpenseGroup, groupID, deviceUserID string, now ti
 	}
 }
 
-func upsertGroup(tx *gorm.DB, group dao.ExpenseGroup) error {
+func upsertGroup(tx *gorm.DB, group dao.ExpenseGroup, force ...bool) error {
 	table := dao.QualifiedTable("expense_groups")
 	row := map[string]any{
 		"id":          group.ID,
@@ -306,11 +336,11 @@ func upsertGroup(tx *gorm.DB, group dao.ExpenseGroup) error {
 			"created_by":  gorm.Expr(fmt.Sprintf("coalesce(%s.created_by, excluded.created_by)", table)),
 			"updated_at":  row["updated_at"],
 			"deleted_at":  row["deleted_at"],
-		})).
+		}, force...)).
 		Create(row).Error
 }
 
-func upsertAccount(tx *gorm.DB, account dao.ExpenseAccount) error {
+func upsertAccount(tx *gorm.DB, account dao.ExpenseAccount, force ...bool) error {
 	now := time.Now().UTC()
 	table := dao.QualifiedTable("expense_accounts")
 	fxMarkupPercent := DefaultFXMarkupPercent
@@ -346,11 +376,11 @@ func upsertAccount(tx *gorm.DB, account dao.ExpenseAccount) error {
 			"icon":              row["icon"],
 			"updated_at":        row["updated_at"],
 			"deleted_at":        row["deleted_at"],
-		})).
+		}, force...)).
 		Create(row).Error
 }
 
-func upsertCategory(tx *gorm.DB, category dao.ExpenseCategory) error {
+func upsertCategory(tx *gorm.DB, category dao.ExpenseCategory, force ...bool) error {
 	now := time.Now().UTC()
 	table := dao.QualifiedTable("expense_categories")
 	scope := normalizeCategoryScope(category.Scope)
@@ -385,11 +415,11 @@ func upsertCategory(tx *gorm.DB, category dao.ExpenseCategory) error {
 			"monthly_target": row["monthly_target"],
 			"updated_at":     row["updated_at"],
 			"deleted_at":     row["deleted_at"],
-		})).
+		}, force...)).
 		Create(row).Error
 }
 
-func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) (bool, error) {
+func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry, force ...bool) (bool, error) {
 	now := time.Now().UTC()
 	metadataJSON, err := json.Marshal(entry.Metadata)
 	if err != nil {
@@ -400,7 +430,7 @@ func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) (bool, error) {
 	}
 	table := dao.QualifiedTable("expense_entries")
 
-	result := tx.Exec(entryUpsertSQL(table),
+	result := tx.Exec(entryUpsertSQL(table, force...),
 		entry.ID,
 		entry.GroupID,
 		entry.AccountID,
@@ -427,7 +457,11 @@ func upsertEntry(tx *gorm.DB, entry dao.ExpenseEntry) (bool, error) {
 	return result.RowsAffected > 0, nil
 }
 
-func entryUpsertSQL(table string) string {
+func entryUpsertSQL(table string, force ...bool) string {
+	guard := fmt.Sprintf("where excluded.updated_at > %s.updated_at", table)
+	if len(force) > 0 && force[0] {
+		guard = ""
+	}
 	return fmt.Sprintf(`
 		insert into %s (
 			id, group_id, account_id, category_id, type, amount, currency, occurred_on,
@@ -456,11 +490,11 @@ func entryUpsertSQL(table string) string {
 			created_by = coalesce(%s.created_by, excluded.created_by),
 			updated_at = excluded.updated_at,
 			deleted_at = excluded.deleted_at
-		where excluded.updated_at > %s.updated_at
-	`, table, table, table)
+		%s
+	`, table, table, guard)
 }
 
-func upsertAdjustment(tx *gorm.DB, adjustment dao.ExpenseCategoryAdjustment) error {
+func upsertAdjustment(tx *gorm.DB, adjustment dao.ExpenseCategoryAdjustment, force ...bool) error {
 	now := time.Now().UTC()
 	table := dao.QualifiedTable("expense_category_adjustments")
 	row := map[string]any{
@@ -484,11 +518,14 @@ func upsertAdjustment(tx *gorm.DB, adjustment dao.ExpenseCategoryAdjustment) err
 			"note":        row["note"],
 			"updated_at":  row["updated_at"],
 			"deleted_at":  row["deleted_at"],
-		})).
+		}, force...)).
 		Create(row).Error
 }
 
-func newerOnlyOnConflict(table string, assignments map[string]any) clause.OnConflict {
+func newerOnlyOnConflict(table string, assignments map[string]any, force ...bool) clause.OnConflict {
+	if len(force) > 0 && force[0] {
+		return clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.Assignments(assignments)}
+	}
 	return clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoUpdates: clause.Assignments(assignments),
@@ -591,9 +628,9 @@ func upsertMerchant(tx *gorm.DB, merchant dao.ExpenseMerchant) error {
 	return nil
 }
 
-func pullGroups(tx *gorm.DB, groupID string) ([]dao.ExpenseGroup, error) {
+func pullGroups(tx *gorm.DB, groupID string, pages ...*request.SyncOptions) ([]dao.ExpenseGroup, error) {
 	var rows []dao.ExpenseGroup
-	if err := tx.Raw(fmt.Sprintf(`
+	if err := syncQuery(tx, pages, fmt.Sprintf(`
 		select
 			id::text as id,
 			name,
@@ -610,9 +647,9 @@ func pullGroups(tx *gorm.DB, groupID string) ([]dao.ExpenseGroup, error) {
 	return rows, nil
 }
 
-func pullAccounts(tx *gorm.DB, groupID string) ([]dao.ExpenseAccount, error) {
+func pullAccounts(tx *gorm.DB, groupID string, pages ...*request.SyncOptions) ([]dao.ExpenseAccount, error) {
 	var rows []dao.ExpenseAccount
-	if err := tx.Raw(fmt.Sprintf(`
+	if err := syncQuery(tx, pages, fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -634,7 +671,7 @@ func pullAccounts(tx *gorm.DB, groupID string) ([]dao.ExpenseAccount, error) {
 	return rows, nil
 }
 
-func pullCategories(tx *gorm.DB, groupID string, authUserID string) ([]dao.ExpenseCategory, error) {
+func pullCategories(tx *gorm.DB, groupID string, authUserID string, pages ...*request.SyncOptions) ([]dao.ExpenseCategory, error) {
 	var rows []dao.ExpenseCategory
 	authUserID = strings.TrimSpace(authUserID)
 	accessClause := "(scope = 'household')"
@@ -643,7 +680,7 @@ func pullCategories(tx *gorm.DB, groupID string, authUserID string) ([]dao.Expen
 		accessClause = "(scope = 'household' or (scope = 'user' and owner_user_id = ?::uuid))"
 		args = append(args, authUserID)
 	}
-	if err := tx.Raw(fmt.Sprintf(`
+	if err := syncQuery(tx, pages, fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -666,9 +703,9 @@ func pullCategories(tx *gorm.DB, groupID string, authUserID string) ([]dao.Expen
 	return rows, nil
 }
 
-func pullEntries(tx *gorm.DB, groupID string) ([]dao.ExpenseEntry, error) {
+func pullEntries(tx *gorm.DB, groupID string, pages ...*request.SyncOptions) ([]dao.ExpenseEntry, error) {
 	var rows []dao.ExpenseEntry
-	if err := tx.Raw(fmt.Sprintf(`
+	if err := syncQuery(tx, pages, fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -698,9 +735,9 @@ func pullEntries(tx *gorm.DB, groupID string) ([]dao.ExpenseEntry, error) {
 	return rows, nil
 }
 
-func pullAdjustments(tx *gorm.DB, groupID string) ([]dao.ExpenseCategoryAdjustment, error) {
+func pullAdjustments(tx *gorm.DB, groupID string, pages ...*request.SyncOptions) ([]dao.ExpenseCategoryAdjustment, error) {
 	var rows []dao.ExpenseCategoryAdjustment
-	if err := tx.Raw(fmt.Sprintf(`
+	if err := syncQuery(tx, pages, fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,
@@ -720,9 +757,9 @@ func pullAdjustments(tx *gorm.DB, groupID string) ([]dao.ExpenseCategoryAdjustme
 	return rows, nil
 }
 
-func pullMerchants(tx *gorm.DB, groupID string) ([]dao.ExpenseMerchant, error) {
+func pullMerchants(tx *gorm.DB, groupID string, pages ...*request.SyncOptions) ([]dao.ExpenseMerchant, error) {
 	var rows []dao.ExpenseMerchant
-	if err := tx.Raw(fmt.Sprintf(`
+	if err := syncQuery(tx, pages, fmt.Sprintf(`
 		select
 			id::text as id,
 			group_id::text as group_id,

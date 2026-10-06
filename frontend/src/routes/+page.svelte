@@ -20,6 +20,7 @@
 	import { parseDate, type DateValue } from '@internationalized/date';
 	import AppSelect, { consumeSelectClickThroughGuard } from '$lib/components/AppSelect.svelte';
 	import StatementIngestion from '$lib/components/StatementIngestion.svelte';
+	import SyncConflictDialog from '$lib/components/SyncConflictDialog.svelte';
 	import { onMount, tick } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import {
@@ -57,6 +58,7 @@
 	type TransactionViewFilter = 'all' | 'household' | 'personal' | 'income' | 'expense';
 
 	const syncStatus = finance.syncStatus;
+	const syncConflict = finance.syncConflict;
 	const palette = ['#2563eb', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444', '#0891b2', '#64748b', '#334155'];
 	const legacyColorMap: Record<string, string> = {
 		'#0f766e': '#10b981',
@@ -541,6 +543,7 @@
 			if (remoteSearchTimer) clearTimeout(remoteSearchTimer);
 			window.removeEventListener('online', syncWhenOnline);
 			window.removeEventListener('offline', markOffline);
+			finance.resolveSyncConflict('later');
 		};
 	});
 
@@ -636,14 +639,14 @@
 
 		const synced = await finance.syncNow();
 		if (!synced) {
-			showFeedback('error', 'Sync failed', 'Could not refresh from backend.');
+			showFeedback('error', 'Sync failed', $syncStatus.message || 'Could not refresh from backend.');
 			return;
 		}
 		showFeedback('success', 'Refreshed', 'Latest data loaded from backend.');
 	}
 
 	async function handleManualSync(): Promise<void> {
-		if ($syncStatus.state === 'syncing') return;
+		if ($syncStatus.state === 'syncing' || $syncStatus.state === 'conflict') return;
 		if (!isOnline) {
 			showFeedback('error', 'Offline', 'You are offline. Changes will sync when the connection returns.');
 			return;
@@ -1681,6 +1684,7 @@ function getEntryCategoryOptions(
 	}
 
 	function logout(): void {
+		finance.resolveSyncConflict('later');
 		clearSession();
 		authSession = null;
 		authError = '';
@@ -2599,7 +2603,7 @@ function getEntryCategoryOptions(
 					<div class="button-row">
 						<button
 							type="button"
-							disabled={$syncStatus.state === 'syncing'}
+							disabled={$syncStatus.state === 'syncing' || $syncStatus.state === 'conflict'}
 							aria-busy={$syncStatus.state === 'syncing'}
 							on:click={handleManualSync}
 						>
@@ -2926,6 +2930,23 @@ function getEntryCategoryOptions(
 	</nav>
 </main>
 
+{#if authSession && $syncConflict}
+	<SyncConflictDialog conflict={$syncConflict} state={$finance} onChoose={finance.resolveSyncConflict} />
+{/if}
+
+{#if authSession && $syncStatus.state === 'error'}
+	<div class="sync-error-banner" role="alert">
+		<div>
+			<strong>Sync failed. Your changes are saved on this device.</strong>
+			<details>
+				<summary>Error details</summary>
+				<p>{$syncStatus.message}</p>
+			</details>
+		</div>
+		<button type="button" on:click={handleManualSync}>Retry sync</button>
+	</div>
+{/if}
+
 {#if feedbackOpen}
 	<div class="feedback-toast-wrap" role="status" aria-live="polite">
 		<div class={`feedback-toast ${feedbackKind}`}>
@@ -2971,7 +2992,7 @@ function getEntryCategoryOptions(
 		<div class="sidebar-footer">
 			<button
 				type="button"
-				disabled={$syncStatus.state === 'syncing'}
+				disabled={$syncStatus.state === 'syncing' || $syncStatus.state === 'conflict'}
 				aria-busy={$syncStatus.state === 'syncing'}
 				on:click={handleManualSync}
 			>
@@ -4065,7 +4086,7 @@ function getEntryCategoryOptions(
 					<div class="button-row">
 						<button
 							type="button"
-							disabled={$syncStatus.state === 'syncing'}
+							disabled={$syncStatus.state === 'syncing' || $syncStatus.state === 'conflict'}
 							aria-busy={$syncStatus.state === 'syncing'}
 							on:click={handleManualSync}
 						>

@@ -2,6 +2,7 @@ import { get, writable } from 'svelte/store';
 import { DEFAULT_FX_MARKUP_PERCENT } from './constants';
 import { putRecord, loadFinanceState, patchSettings } from './db';
 import { syncFinanceState } from './sync';
+import { mergeServerState, SyncConflictDeferredError, type SyncConflict, type SyncResolution } from './sync-protocol';
 import type {
 	Account,
 	AccountType,
@@ -18,12 +19,14 @@ import type {
 import { cents, isoNow, makeId, normalizeCurrencyCode, normalizeText, todayInputValue } from './utils';
 
 interface SyncStatus {
-	state: 'idle' | 'syncing' | 'offline' | 'error';
+	state: 'idle' | 'syncing' | 'offline' | 'error' | 'conflict';
 	message: string;
 }
 
 const financeState = writable<FinanceState | null>(null);
 const syncStatus = writable<SyncStatus>({ state: 'idle', message: 'Local changes saved' });
+const syncConflict = writable<SyncConflict | null>(null);
+let pendingConflictChoice: ((choice: SyncResolution) => void) | undefined;
 
 function touch<T extends { updatedAt: string; deletedAt?: string | null }>(record: T): T {
 	return { ...record, updatedAt: isoNow(), deletedAt: record.deletedAt ?? null };
@@ -34,27 +37,16 @@ function updateList<T extends { id: string }>(records: T[], record: T): T[] {
 	return exists ? records.map((item) => (item.id === record.id ? record : item)) : [record, ...records];
 }
 
-function mergeFreshestRecords<T extends { id: string; updatedAt: string }>(current: T[], synced: T[]): T[] {
-	const records = new Map(current.map((record) => [record.id, record]));
-	for (const incoming of synced) {
-		const existing = records.get(incoming.id);
-		if (!existing || new Date(incoming.updatedAt).getTime() >= new Date(existing.updatedAt).getTime()) {
-			records.set(incoming.id, incoming);
-		}
-	}
-	return [...records.values()];
-}
-
-function reconcileSyncedState(current: FinanceState, synced: FinanceState): FinanceState {
-	return {
-		...synced,
-		groups: mergeFreshestRecords(current.groups, synced.groups),
-		accounts: mergeFreshestRecords(current.accounts, synced.accounts),
-		categories: mergeFreshestRecords(current.categories, synced.categories),
-		entries: mergeFreshestRecords(current.entries, synced.entries),
-		adjustments: mergeFreshestRecords(current.adjustments, synced.adjustments),
-		merchants: mergeFreshestRecords(current.merchants, synced.merchants)
-	};
+function requestSyncConflict(conflict: SyncConflict): Promise<SyncResolution> {
+	syncStatus.set({ state: 'conflict', message: 'Choose which version to keep to continue syncing.' });
+	return new Promise((resolve) => {
+		pendingConflictChoice = (choice) => {
+			pendingConflictChoice = undefined;
+			syncConflict.set(null);
+			resolve(choice);
+		};
+		syncConflict.set(conflict);
+	});
 }
 
 function normalizeMerchantKey(value: string): string {
@@ -80,6 +72,8 @@ async function mutate<K extends keyof FinanceState>(
 export const finance = {
 	subscribe: financeState.subscribe,
 	syncStatus,
+	syncConflict,
+	resolveSyncConflict(choice: SyncResolution): void { pendingConflictChoice?.(choice); },
 
 	async init() {
 		const loaded = await loadFinanceState();
@@ -358,35 +352,69 @@ export const finance = {
 		await mutate('groups', 'groups', next);
 	},
 
-	async syncNow(): Promise<boolean> {
-		if (!navigator.onLine) {
-			syncStatus.set({ state: 'offline', message: 'Offline. Changes will sync when connection returns.' });
-			return false;
-		}
-
-		const state = get(financeState);
-		if (!state) return false;
-
-		try {
-			syncStatus.set({ state: 'syncing', message: 'Syncing with backend API...' });
-			const synced = await syncFinanceState(state, () => get(financeState) ?? state);
-			await patchSettings({
-				activeGroupId: synced.settings.activeGroupId,
-				baseCurrency: synced.settings.baseCurrency,
-				lastSyncedAt: synced.settings.lastSyncedAt
-			});
-			financeState.update((current) => (current ? reconcileSyncedState(current, synced) : synced));
-			syncStatus.set({ state: 'idle', message: 'Synced' });
-			return true;
-		} catch (error) {
-			syncStatus.set({
-				state: 'error',
-				message: error instanceof Error ? error.message : 'Sync failed'
-			});
-			return false;
-		}
+	syncNow(): Promise<boolean> {
+		return requestFinanceSync();
 	}
 };
+
+let activeSync: Promise<boolean> | undefined;
+let syncRequested = false;
+
+function requestFinanceSync(): Promise<boolean> {
+	syncRequested = true;
+	if (!activeSync) {
+		activeSync = (async () => {
+			do {
+				syncRequested = false;
+				if (!await runFinanceSync()) return false;
+			} while (syncRequested);
+			return true;
+		})().finally(() => { activeSync = undefined; });
+	}
+	return activeSync;
+}
+
+async function runFinanceSync(): Promise<boolean> {
+	if (!navigator.onLine) {
+		syncStatus.set({ state: 'offline', message: 'Offline. Changes will sync when connection returns.' });
+		return false;
+	}
+
+	const state = get(financeState);
+	if (!state) return false;
+	let internalState: FinanceState | null = state;
+
+	try {
+		syncStatus.set({ state: 'syncing', message: 'Syncing with backend API...' });
+		const synced = await syncFinanceState(state, () => get(financeState) ?? state, (message) => {
+			syncStatus.set({ state: 'syncing', message });
+		}, requestSyncConflict, (remote, expected, removals) => {
+			if (get(financeState) !== internalState) syncRequested = true;
+			financeState.update(current => current ? mergeServerState(current, remote, expected, removals) : current);
+			internalState = get(financeState);
+		});
+		await patchSettings({
+			activeGroupId: synced.settings.activeGroupId,
+			baseCurrency: synced.settings.baseCurrency,
+			lastSyncedAt: synced.settings.lastSyncedAt
+		});
+		if (get(financeState) !== internalState) syncRequested = true;
+		financeState.update(current => current ? { ...current, settings: {
+			...synced.settings,
+			activeGroupId: current.settings.activeGroupId !== internalState?.settings.activeGroupId
+				? current.settings.activeGroupId : synced.settings.activeGroupId
+		} } : synced);
+		syncStatus.set({ state: 'idle', message: 'Synced' });
+		return true;
+	} catch (error) {
+		if (!(error instanceof SyncConflictDeferredError)) console.error('[sync] Failed to sync with backend', error);
+		syncStatus.set({
+			state: 'error',
+			message: error instanceof Error ? error.message : 'Sync failed'
+		});
+		return false;
+	}
+}
 
 function normalizeLedgerEntry(entry: LedgerEntry, fallbackBaseCurrency: string): LedgerEntry {
 	const currency = normalizeCurrencyCode(entry.currency);

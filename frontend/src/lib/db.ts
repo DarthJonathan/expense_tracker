@@ -10,7 +10,8 @@ import type {
 	LocalStatementJob,
 	Merchant
 } from './types';
-import { isoNow, makeId } from './utils';
+import { makeId } from './utils';
+import { sameSyncRecord, SYNC_COLLECTIONS, type SyncCheckpoint, type SyncRecords, type SyncRemovals } from './sync-protocol';
 
 type StoreName =
 	| 'settings'
@@ -20,10 +21,11 @@ type StoreName =
 	| 'entries'
 	| 'adjustments'
 	| 'merchants'
+	| 'syncCheckpoints'
 	| 'statementLocalJobs';
 
 const DB_NAME = 'shared-expense-tracker';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let dbPromise: Promise<IDBDatabase> | undefined;
 
@@ -43,6 +45,7 @@ function openDb(): Promise<IDBDatabase> {
 				'entries',
 				'adjustments',
 				'merchants',
+				'syncCheckpoints',
 				'statementLocalJobs'
 			]) {
 				if (!db.objectStoreNames.contains(storeName)) {
@@ -164,15 +167,43 @@ export async function loadFinanceState(): Promise<FinanceState> {
 	return { settings, groups, accounts, categories, entries, adjustments, merchants };
 }
 
-export async function mergeRemoteState(remote: Partial<Omit<FinanceState, 'settings'>>): Promise<void> {
-	await Promise.all([
-		remote.groups?.length ? putMany('groups', remote.groups) : Promise.resolve(),
-		remote.accounts?.length ? putMany('accounts', remote.accounts) : Promise.resolve(),
-		remote.categories?.length ? putMany('categories', remote.categories) : Promise.resolve(),
-		remote.entries?.length ? putMany('entries', remote.entries) : Promise.resolve(),
-		remote.adjustments?.length ? putMany('adjustments', remote.adjustments) : Promise.resolve(),
-		remote.merchants?.length ? putMany('merchants', remote.merchants) : Promise.resolve()
-	]);
+export async function getSyncCheckpoint(id: string): Promise<SyncCheckpoint> {
+	return (await tx<SyncCheckpoint | undefined>('syncCheckpoints', 'readonly', (store) => store.get(id)))
+		?? { id, fingerprints: {} };
+}
 
-	await patchSettings({ lastSyncedAt: isoNow() });
+export async function saveSyncCheckpoint(checkpoint: SyncCheckpoint): Promise<void> {
+	// Wait for the transaction to commit before considering a batch acknowledged.
+	await putMany('syncCheckpoints', [checkpoint]);
+}
+
+async function mergeRemoteRecords(storeName: StoreName, records: Array<{ id: string; updatedAt: string }>, expected: Array<{ id: string; updatedAt: string }>, removed: string[]): Promise<void> {
+	const db = await openDb();
+	await new Promise<void>((resolve, reject) => {
+		const transaction = db.transaction(storeName, 'readwrite');
+		const store = transaction.objectStore(storeName);
+		const before = new Map(expected.map((record) => [record.id, record]));
+		for (const record of records) {
+			const request = store.get(record.id);
+			request.onsuccess = () => {
+				// Server authority is independent of clocks. Only overwrite the exact
+				// local snapshot approved by sync; later edits remain pending.
+				if (sameSyncRecord(request.result, before.get(record.id))) {
+					store.put(record);
+				}
+			};
+		}
+		for (const id of removed) {
+			const request = store.get(id);
+			request.onsuccess = () => { if (sameSyncRecord(request.result, before.get(id))) store.delete(id); };
+		}
+		transaction.oncomplete = () => resolve();
+		transaction.onerror = () => reject(transaction.error);
+		transaction.onabort = () => reject(transaction.error);
+	});
+}
+
+export async function mergeRemoteState(remote: SyncRecords, expected: SyncRecords, removals: SyncRemovals = {}): Promise<void> {
+	await Promise.all(SYNC_COLLECTIONS.map((collection) => remote[collection].length || removals[collection]?.length
+		? mergeRemoteRecords(collection, remote[collection], expected[collection], removals[collection] ?? []) : Promise.resolve()));
 }

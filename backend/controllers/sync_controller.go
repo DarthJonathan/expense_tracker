@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -60,14 +61,20 @@ func (c *SyncController) SyncV1(w http.ResponseWriter, r *http.Request) {
 	result, err := c.Service.Sync(r.Context(), authUserID, req)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if strings.Contains(strings.ToLower(err.Error()), "required") {
+		if errors.Is(err, service.ErrSyncUpgradeRequired) {
+			status = http.StatusConflict
+		} else if errors.Is(err, service.ErrSyncRecordForbidden) {
+			status = http.StatusForbidden
+		} else if errors.Is(err, service.ErrInvalidSyncOptions) || strings.Contains(strings.ToLower(err.Error()), "required") {
 			status = http.StatusBadRequest
 		}
 
 		log.WithError(err).WithFields(log.Fields{
-			"route":  "/api/v1/sync",
-			"status": status,
-		}).Warn("sync failed")
+			"route":      "/api/v1/sync",
+			"status":     status,
+			"request_id": r.Context().Value(constants.RequestIDCtx),
+			"entries":    len(req.Entries),
+		}).Error("sync failed")
 
 		c.writeJSON(w, status, response.SyncResponse{
 			BaseResponse: response.BaseResponse{Success: false, Error: err.Error()},

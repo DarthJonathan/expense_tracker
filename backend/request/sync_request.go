@@ -11,6 +11,7 @@ type SyncSettingsRequest struct {
 }
 
 type SyncRequest struct {
+	Sync        *SyncOptions                    `json:"sync,omitempty"`
 	Settings    SyncSettingsRequest             `json:"settings"`
 	Groups      []dao.ExpenseGroup              `json:"groups"`
 	Accounts    []dao.ExpenseAccount            `json:"accounts"`
@@ -18,4 +19,16 @@ type SyncRequest struct {
 	Entries     []dao.ExpenseEntry              `json:"entries"`
 	Adjustments []dao.ExpenseCategoryAdjustment `json:"adjustments"`
 	Merchants   []dao.ExpenseMerchant           `json:"merchants"`
+}
+
+type SyncOptions struct {
+	Version      int                          `json:"version,omitempty"`
+	BaseVersions map[string]map[string]string `json:"baseVersions,omitempty"`
+	Mode         string                       `json:"mode"`
+	Collection   string                       `json:"collection,omitempty"`
+	Cursor       string                       `json:"cursor,omitempty"`
+	Limit        int                          `json:"limit,omitempty"`
+	Known        map[string]string            `json:"known,omitempty"`
+	RecordID     string                       `json:"-"`
+	Lock         bool                         `json:"-"`
 }

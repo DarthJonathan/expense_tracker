@@ -83,8 +83,22 @@ converted to the user's base currency using the transaction date. The response i
 ## Notes
 
 - Sync is still offline-first: local changes are saved immediately and pushed when online.
-- For shared family/group workflows, records are scoped by `activeGroupId` and merged by `updatedAt`.
+- Shared family/group records are scoped by the server-assigned group. The server is authoritative; concurrent local/server edits require a choice during sync.
 - IDs should be UUIDs to match PostgreSQL UUID columns.
+
+## Sync behavior
+
+Sync uploads only records that differ from the device's durable acknowledgements, including soft deletions. Requests contain at most 100 records and 128 KiB of JSON, with accounts and categories sent before their dependent transactions. Accepted canonical records and acknowledgements are saved in IndexedDB so retries resume after a failed batch.
+
+Downloads use UUID keyset pages of 100 records per collection. The client sends compact server-issued content versions for records it already has, and the backend returns only new or changed records plus the next page cursor. This avoids relying on device clocks for change detection. The backend still checks each page; this is not a database change-feed implementation. Sync calls are serialized, and edits made during a sync trigger another pass.
+
+The server checks each edit against the server version last seen by that device, under a row lock. A conflict opens a comparison dialog with **Keep server version**, **Keep my local version**, and **Decide later**. Local choices are rechecked against the displayed server version before writing; another intervening server edit causes another conflict. Server choices replace the local snapshot regardless of device timestamps, while edits made after that snapshot remain pending. Deciding later preserves the local edit and leaves the conflict unresolved. New records and edits based on an unchanged server version sync automatically.
+
+Server timestamps, group identity, base currency, FX calculations, and the merchant catalogue are canonical server fields. Sync does not use device clocks to select a winner. Deploy the backend before the frontend. The frontend requires protocol version 3; older clients must refresh before sending edits that would conflict with existing server records. Existing IndexedDB records and earlier sync checkpoints are preserved.
+
+The optional PostgreSQL integration checks for conflict handling, concurrent writers, and group isolation run with `SYNC_TEST_DATABASE_URL='postgres://...' go test ./service -run TestSyncServerAuthorityPostgres` from `backend/`. They use a temporary test schema.
+
+Failures are logged in the browser console and shown in a persistent banner with error details. The HTTP status and request ID link a failed request to frontend proxy and backend logs. Proxy connection failures return JSON with HTTP 502. To inspect Docker logs, use `docker compose logs --tail=100 frontend backend`.
 
 ## Private statement ingestion
 

@@ -196,6 +196,13 @@ create table if not exists spendit.expense_statement_ingestion_rows (
 	deleted_at timestamptz
 );
 
+-- Sync pagination includes deleted records so offline devices receive tombstones.
+create index if not exists expense_accounts_sync_page_idx on spendit.expense_accounts (group_id, id);
+create index if not exists expense_categories_sync_page_idx on spendit.expense_categories (group_id, id);
+create index if not exists expense_entries_sync_page_idx on spendit.expense_entries (group_id, id);
+create index if not exists expense_category_adjustments_sync_page_idx on spendit.expense_category_adjustments (group_id, id);
+create index if not exists expense_merchants_sync_page_idx on spendit.expense_merchants (group_id, id);
+
 create unique index if not exists expense_accounts_group_name_uidx
 on spendit.expense_accounts (group_id, lower(name))
 where deleted_at is null;

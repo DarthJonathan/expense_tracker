@@ -306,6 +306,10 @@ func Migrate(db *gorm.DB) error {
 			tables["entries"]),
 	}
 
+	// Sync keyset pages include tombstones, so these indexes must not be partial.
+	for _, table := range []string{"expense_accounts", "expense_categories", "expense_entries", "expense_category_adjustments", "expense_merchants"} {
+		indexes = append(indexes, fmt.Sprintf(`create index if not exists %s_sync_page_idx on %s (group_id, id)`, table, dao.QualifiedTable(table)))
+	}
 	for _, statement := range indexes {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("create index: %w", err)
