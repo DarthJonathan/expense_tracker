@@ -36,7 +36,7 @@ const originalConsoleError = console.error;
 const logs = [];
 
 try {
-	const { readSyncError } = await server.ssrLoadModule('/src/lib/sync-error.ts');
+	const { readSyncError, SyncHTTPError } = await server.ssrLoadModule('/src/lib/sync-error.ts');
 	const { proxyApiRequest } = await server.ssrLoadModule('/src/lib/server/api-proxy.ts');
 	console.error = (...args) => logs.push(args);
 
@@ -86,6 +86,18 @@ try {
 	assert.match(emptyError.message, /no error details/);
 	const unauthorized = await readSyncError(Response.json({ error: 'unauthorized' }, { status: 401 }));
 	assert.match(unauthorized.message, /HTTP 401.*unauthorized/);
+	const inaccessibleRecord = { collection: 'categories', id: '9ff12ef9-0ca2-4bb6-bceb-d6aa8d10d2e5' };
+	const accessError = await readSyncError(Response.json({ error: 'sync record is not accessible', inaccessibleRecord }, {
+		status: 403, headers: { 'x-request-id': 'access-request' }
+	}));
+	assert.ok(accessError instanceof SyncHTTPError);
+	assert.equal(accessError.status, 403);
+	assert.equal(accessError.requestId, 'access-request');
+	assert.deepEqual(accessError.inaccessibleRecord, inaccessibleRecord);
+	const legacyAccess = await readSyncError(Response.json({ error: `sync record is not accessible (categories record ${inaccessibleRecord.id})` }, { status: 403 }));
+	assert.deepEqual(legacyAccess.inaccessibleRecord, inaccessibleRecord, 'Existing deployed diagnostics must also support server reconciliation');
+	const malformedAccess = await readSyncError(Response.json({ error: 'forbidden', inaccessibleRecord: { collection: 'categories', id: 'not-a-uuid' } }, { status: 403 }));
+	assert.equal(malformedAccess.inaccessibleRecord, undefined);
 
 	globalThis.fetch = async () => Response.json({ success: true, data: { entries: [] } });
 	const success = await proxyApiRequest(request(), 'sync', 'http://backend:8080');
@@ -144,7 +156,7 @@ try {
 			for (const row of payload.categories) {
 				const stored = harness.serverRecords.categories.find(item => item.id === row.id);
 				if (stored?.scope === 'user' && stored.ownerUserId !== (harness.userId ?? 'test-user')) {
-					return Response.json({ error: 'sync record is not accessible' }, { status: 403 });
+					return Response.json({ error: `sync record is not accessible (categories record ${row.id})` }, { status: 403 });
 				}
 			}
 			const accepted = protocol.emptySyncRecords();
@@ -333,6 +345,111 @@ try {
 	assert.equal(retried.categories.find(row => row.id === otherPersonal.id).name, 'Retain this offline edit');
 	assert.equal(harness.checkpoints.get('test-user:group').fingerprints.categories[otherPersonal.id], olderCheckpoint.fingerprints.categories[otherPersonal.id], 'Old checkpoints must not acknowledge an excluded local edit');
 	assert.equal(harness.requests.filter(payload => payload.sync.mode === 'push').length, 0, 'Cached private records must not keep retrying');
+
+	// A stale shared copy can become private on the server. Its local ownership
+	// metadata still permits an upload, so the server's access decision must win.
+	const revokedID = '9ff12ef9-0ca2-4bb6-bceb-d6aa8d10d2e5';
+	const wasShared = record(revokedID, { name: 'Coffee', scope: 'household', ownerUserId: null });
+	const nowPrivate = { ...wasShared, scope: 'user', ownerUserId: 'other-user', updatedAt: serverTime() };
+	const unrelated = record('unrelated-category', { name: 'Groceries', scope: 'household', ownerUserId: null });
+	const keptEntry = record('kept-entry', { categoryId: revokedID, accountId: 'account', note: 'Keep this transaction' });
+	harness.serverRecords = { ...protocol.emptySyncRecords(), categories: [structuredClone(nowPrivate)] };
+	harness.checkpoints = new Map();
+	harness.requests = [];
+	const staleScope = { settings, ...protocol.emptySyncRecords(), categories: [{ ...wasShared, name: 'Stale coffee edit' }, unrelated], entries: [keptEntry] };
+	prompts = 0;
+	const scopeSynced = await callSync(staleScope, async () => { prompts++; return 'local'; });
+	assert.equal(prompts, 0, 'A server access revocation must not ask to overwrite the private category');
+	assert.ok(!scopeSynced.categories.some(row => row.id === revokedID), 'Remove the inaccessible stale category from the current cache');
+	assert.deepEqual(harness.serverRecords.categories.find(row => row.id === revokedID), nowPrivate, 'The private server record must stay authoritative');
+	assert.ok(scopeSynced.categories.some(row => row.id === unrelated.id));
+	assert.ok(harness.serverRecords.categories.some(row => row.id === unrelated.id), 'Retry the rest of the rejected batch');
+	assert.ok(scopeSynced.entries.some(row => row.id === keptEntry.id), 'Category reconciliation must preserve transactions');
+	assert.ok(harness.serverRecords.entries.some(row => row.id === keptEntry.id), 'Transactions must continue syncing');
+	assert.equal(harness.checkpoints.get('test-user:group').fingerprints.categories?.[revokedID], undefined);
+	harness.requests = [];
+	await callSync(scopeSynced);
+	assert.equal(harness.requests.filter(payload => payload.sync.mode === 'push').length, 0, 'The stale category must not retry after reconciliation');
+	const sharedAgain = { ...nowPrivate, scope: 'household', ownerUserId: null, updatedAt: serverTime() };
+	harness.serverRecords.categories = harness.serverRecords.categories.map(row => row.id === revokedID ? sharedAgain : row);
+	const visibleAgain = await callSync(scopeSynced);
+	assert.deepEqual(visibleAgain.categories.find(row => row.id === revokedID), sharedAgain, 'A category must return when the server shares it again');
+
+	// Access revocation also wins over a later category edit, while an unrelated
+	// edit made during the failed request remains pending until the next pass.
+	harness.serverRecords = { ...protocol.emptySyncRecords(), categories: [structuredClone(nowPrivate)] };
+	harness.checkpoints = new Map();
+	let editDuringRevocation = true;
+	harness.beforeFetch = payload => {
+		if (editDuringRevocation && payload.sync.mode === 'push' && payload.categories.some(row => row.id === revokedID)) {
+			editDuringRevocation = false;
+			harness.localState = { ...harness.localState, categories: harness.localState.categories.map(row =>
+				({ ...row, name: row.id === revokedID ? 'Later stale coffee edit' : 'Later grocery edit' })) };
+		}
+	};
+	const racedScope = await callSync(structuredClone(staleScope));
+	delete harness.beforeFetch;
+	assert.ok(!racedScope.categories.some(row => row.id === revokedID));
+	assert.equal(racedScope.categories.find(row => row.id === unrelated.id).name, 'Later grocery edit');
+	assert.equal(harness.serverRecords.categories.find(row => row.id === unrelated.id).name, unrelated.name);
+	const afterRace = await callSync(racedScope);
+	assert.equal(afterRace.categories.find(row => row.id === unrelated.id).name, 'Later grocery edit');
+	assert.equal(harness.serverRecords.categories.find(row => row.id === unrelated.id).name, 'Later grocery edit');
+
+	// A generic permission failure or a record outside the submitted category
+	// batch cannot authorize removing local data. Other HTTP failures still stop.
+	const normalSyncFetch = harness.fetch;
+	for (const [status, denied] of [
+		[403, undefined], [403, { collection: 'accounts', id: revokedID }],
+		[403, { collection: 'categories', id: '00000000-0000-0000-0000-000000000999' }],
+		[500, { collection: 'categories', id: revokedID }]
+	]) {
+		harness.checkpoints = new Map();
+		harness.fetch = async () => Response.json({ error: 'sync record is not accessible', inaccessibleRecord: denied }, { status });
+		await assert.rejects(callSync(structuredClone(staleScope)), new RegExp(`HTTP ${status}`));
+		assert.deepEqual(harness.localState.categories, staleScope.categories, 'Unrelated errors must preserve all local categories');
+	}
+	harness.fetch = normalSyncFetch;
+
+	// Reconcile multiple inaccessible categories, then recover from a failure in
+	// the retried batch without resurrecting either stale record.
+	const secondRevoked = { ...wasShared, id: '00000000-0000-0000-0000-000000000222' };
+	harness.serverRecords = { ...protocol.emptySyncRecords(), categories: [structuredClone(nowPrivate), { ...secondRevoked, scope: 'user', ownerUserId: 'other-user' }] };
+	harness.checkpoints = new Map();
+	harness.failAt = harness.pushCount + 3;
+	const severalStale = { ...staleScope, categories: [...staleScope.categories, secondRevoked] };
+	await assert.rejects(callSync(severalStale), /HTTP 500.*temporary failure/);
+	assert.ok(!harness.localState.categories.some(row => row.id === revokedID || row.id === secondRevoked.id));
+	harness.failAt = 0;
+	const recovered = await callSync(harness.localState);
+	assert.ok(recovered.categories.some(row => row.id === unrelated.id));
+	assert.ok(recovered.entries.some(row => row.id === keptEntry.id));
+
+	// Visible scope changes in either direction also use the canonical category,
+	// including a cached private copy that has since become shared.
+	for (const [localScope, serverScope, localOwner] of [
+		['household', 'user', null], ['user', 'household', 'test-user'], ['user', 'household', 'other-user']
+	]) {
+		const localCategory = record('scope-change', { name: 'Old coffee', scope: localScope, ownerUserId: localOwner });
+		const serverCategory = { ...localCategory, name: 'Server coffee', scope: serverScope, ownerUserId: serverScope === 'user' ? 'test-user' : null, updatedAt: serverTime() };
+		harness.serverRecords = { ...protocol.emptySyncRecords(), categories: [structuredClone(serverCategory)] };
+		harness.checkpoints = new Map();
+		prompts = 0;
+		const reconciled = await callSync({ settings, ...protocol.emptySyncRecords(), categories: [localCategory] }, async () => { prompts++; return 'local'; });
+		assert.equal(prompts, 0, 'Use the server automatically when category access metadata differs');
+		assert.deepEqual(reconciled.categories[0], serverCategory);
+		assert.deepEqual(harness.serverRecords.categories[0], serverCategory);
+	}
+
+	// An ordinary category-name conflict still needs the user's existing choice.
+	const ordinaryLocal = record('ordinary-category', { name: 'My category name', scope: 'household', ownerUserId: null });
+	const ordinaryServer = { ...ordinaryLocal, name: 'Other category name', updatedAt: serverTime() };
+	harness.serverRecords = { ...protocol.emptySyncRecords(), categories: [ordinaryServer] };
+	harness.checkpoints = new Map();
+	prompts = 0;
+	const ordinary = await callSync({ settings, ...protocol.emptySyncRecords(), categories: [ordinaryLocal] }, async () => { prompts++; return 'local'; });
+	assert.equal(prompts, 1);
+	assert.equal(ordinary.categories[0].name, ordinaryLocal.name);
 
 	console.log('Sync batching, server authority, conflict choices, race protection, retry, and diagnostics tests passed');
 } finally {

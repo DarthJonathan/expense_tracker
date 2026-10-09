@@ -80,14 +80,17 @@ func (c *SyncController) SyncV1(w http.ResponseWriter, r *http.Request) {
 
 		logFields["status"] = status
 		var accessError *service.SyncRecordAccessError
+		var inaccessibleRecord *response.SyncRecordReference
 		if errors.As(err, &accessError) {
 			logFields["sync_collection"] = accessError.Collection
 			logFields["sync_record_id"] = accessError.ID
+			inaccessibleRecord = &response.SyncRecordReference{Collection: accessError.Collection, ID: accessError.ID}
 		}
 		log.WithError(err).WithFields(logFields).Error("sync failed")
 
 		c.writeJSON(w, status, response.SyncResponse{
-			BaseResponse: response.BaseResponse{Success: false, Error: err.Error()},
+			BaseResponse:       response.BaseResponse{Success: false, Error: err.Error()},
+			InaccessibleRecord: inaccessibleRecord,
 		})
 		return
 	}

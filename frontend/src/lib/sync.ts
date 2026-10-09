@@ -2,7 +2,7 @@ import { getSyncCheckpoint, mergeRemoteState, saveSyncCheckpoint } from './db';
 import { apiPath } from './api';
 import { authFetch, getStoredSession } from './auth';
 import { buildSyncBatches, emptySyncRecords, mergeServerState, pendingSyncRecords, recordFingerprint, sameSyncRecord, SYNC_COLLECTIONS, SyncConflictDeferredError, type SyncCollection, type SyncConflict, type SyncPayload, type SyncRecord, type SyncRecords, type SyncRemovals, type SyncResolution, type SyncVersions } from './sync-protocol';
-import { readSyncError, syncErrorMessage } from './sync-error';
+import { readSyncError, syncErrorMessage, SyncHTTPError } from './sync-error';
 import type {
 	Account,
 	Category,
@@ -73,6 +73,15 @@ function singleRecord(collection: SyncCollection, record: SyncRecord): SyncRecor
 	const records = emptySyncRecords();
 	(records[collection] as SyncRecord[]).push(record);
 	return records;
+}
+
+function categoryAccessChanged(conflict: SyncConflict): boolean {
+	if (conflict.collection !== 'categories' || !conflict.server) return false;
+	const local = conflict.local as Category;
+	const server = conflict.server as Category;
+	const scope = (category: Category) => category.scope?.toLowerCase().trim() === 'user' ? 'user' : 'household';
+	const owner = (category: Category) => category.ownerUserId?.trim().toLowerCase() || null;
+	return scope(local) !== scope(server) || owner(local) !== owner(server);
 }
 
 export async function syncFinanceState(
@@ -165,6 +174,9 @@ export async function syncFinanceState(
 	};
 	const choose = async (conflict: SyncConflict): Promise<SyncResolution | 'changed'> => {
 		ensureUser();
+		// A category's current sharing and ownership are authoritative on the
+		// server. A stale copy must not reverse a newer access change.
+		if (categoryAccessChanged(conflict)) return 'server';
 		const choice = await onConflict(conflict);
 		ensureUser();
 		if (choice === 'later') throw new SyncConflictDeferredError();
@@ -177,7 +189,21 @@ export async function syncFinanceState(
 		for (const collection of SYNC_COLLECTIONS) Object.assign(bases[collection] ??= {}, overrides[collection]);
 		for (const batch of buildSyncBatches({ ...state.settings, activeGroupId: resolvedGroupId }, records, bases)) {
 			onProgress(`Uploading changes (batch ${++batchNumber})...`);
-			const result = await syncWithBackend(batch, userId);
+			let result: SyncResponse;
+			try {
+				result = await syncWithBackend(batch, userId);
+			} catch (error) {
+				ensureUser();
+				const denied = error instanceof SyncHTTPError && error.status === 403 ? error.inaccessibleRecord : undefined;
+				if (denied?.collection !== 'categories' || !batch.categories.some(row => row.id === denied.id)) throw error;
+				// The server can no longer expose this category. Its absence is
+				// authoritative; remove only the stale category, never transactions.
+				const local = currentRecord('categories', denied.id);
+				if (local) await keepServer({ collection: 'categories', id: denied.id, server: null, serverVersion: 'missing', local });
+				// The rejected transaction did not acknowledge the other records.
+				await upload({ ...batch, categories: batch.categories.filter(row => row.id !== denied.id) }, overrides);
+				continue;
+			}
 			requireSyncProtocol(result);
 			const serverGroupId = result.settings?.activeGroupId || resolvedGroupId;
 			if (serverGroupId !== resolvedGroupId) {

@@ -41,5 +41,12 @@ type SyncPage struct {
 
 type SyncResponse struct {
 	BaseResponse
-	Data *SyncData `json:"data,omitempty"`
+	Data               *SyncData            `json:"data,omitempty"`
+	InaccessibleRecord *SyncRecordReference `json:"inaccessibleRecord,omitempty"`
+}
+
+// Contains only the collection and UUID submitted by this client.
+type SyncRecordReference struct {
+	Collection string `json:"collection"`
+	ID         string `json:"id"`
 }

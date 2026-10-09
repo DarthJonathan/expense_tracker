@@ -102,9 +102,19 @@ Failures are logged in the browser console and shown in a persistent banner with
 
 A sync 403 means a submitted UUID belongs to an inaccessible group or personal category. The
 error includes the collection and record ID; backend failure logs also include `sync_collection`,
-`sync_record_id`, and counts of the submitted collections. The client keeps cached personal
-categories owned by another user on the device, excludes them from that user's sync, and does not
+`sync_record_id`, and counts of the submitted collections. Error responses also identify the
+submitted UUID in `inaccessibleRecord`, without disclosing private record contents. The client
+keeps cached personal categories owned by another user on the device, excludes them from that user's sync, and does not
 mark their pending edits as uploaded. Server ownership checks still apply to every submitted record.
+
+The server is authoritative when category sharing or ownership changes. Visible category conflicts
+with different scope or ownership automatically take the server copy. If an uploaded category is
+now inaccessible, sync removes that stale category from the local cache and retries the remaining
+records in the rejected batch. Transactions and adjustments are preserved, and the server category
+is never overwritten or recreated. A category that becomes visible again is downloaded normally.
+Ordinary edit conflicts retain the existing choice dialog; generic 403 responses and inaccessible
+records outside the submitted category batch still stop sync without clearing local records. The
+client also understands the record-specific diagnostic text from earlier backends.
 
 ## Home analytics
 
