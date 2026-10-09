@@ -112,6 +112,13 @@ export async function syncFinanceState(
 		const records = emptySyncRecords();
 		for (const collection of SYNC_COLLECTIONS) records[collection] = latest()[collection].filter(row => collection === 'groups'
 			? row.id === resolvedGroupId : 'groupId' in row && row.groupId === resolvedGroupId) as never;
+		// IndexedDB survives sign-ins and can contain another household member's
+		// private categories. Retain those local records without submitting them
+		// as edits or treating their absence from this user's pull as a deletion.
+		records.categories = records.categories.filter(category => {
+			const owner = category.ownerUserId?.trim();
+			return category.scope?.toLowerCase().trim() !== 'user' || !owner || owner === userId;
+		});
 		return records;
 	};
 	let checkpoint = await getSyncCheckpoint(`${userId}:${groupId}`);

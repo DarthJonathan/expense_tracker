@@ -1,6 +1,8 @@
 package service
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +10,21 @@ import (
 	"expense-tracker/backend/dao"
 	"expense-tracker/backend/request"
 )
+
+func TestSyncRecordAccessErrorRetainsForbiddenClassification(t *testing.T) {
+	accessError := &SyncRecordAccessError{Collection: "categories", ID: "submitted-category"}
+	wrapped := fmt.Errorf("prepare sync: %w", accessError)
+	if !errors.Is(wrapped, ErrSyncRecordForbidden) {
+		t.Fatal("record diagnostics must still produce HTTP 403, not an internal error")
+	}
+	var details *SyncRecordAccessError
+	if !errors.As(wrapped, &details) || details.Collection != "categories" || details.ID != "submitted-category" {
+		t.Fatal("record diagnostics were lost through error wrapping")
+	}
+	if !strings.Contains(wrapped.Error(), "categories record submitted-category") {
+		t.Fatal("the API error must identify the submitted record for troubleshooting")
+	}
+}
 
 func TestSyncConflictUsesServerVersionRegardlessOfClock(t *testing.T) {
 	server := dao.ExpenseEntry{ID: "entry", Note: "server note", UpdatedAt: time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)}

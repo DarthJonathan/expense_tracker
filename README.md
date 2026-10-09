@@ -100,6 +100,12 @@ The optional PostgreSQL integration checks for conflict handling, concurrent wri
 
 Failures are logged in the browser console and shown in a persistent banner with error details. The HTTP status and request ID link a failed request to frontend proxy and backend logs. Proxy connection failures return JSON with HTTP 502. To inspect Docker logs, use `docker compose logs --tail=100 frontend backend`.
 
+A sync 403 means a submitted UUID belongs to an inaccessible group or personal category. The
+error includes the collection and record ID; backend failure logs also include `sync_collection`,
+`sync_record_id`, and counts of the submitted collections. The client keeps cached personal
+categories owned by another user on the device, excludes them from that user's sync, and does not
+mark their pending edits as uploaded. Server ownership checks still apply to every submitted record.
+
 ## Home analytics
 
 The mobile home page and desktop dashboard include a 6/12-month spending chart with household,

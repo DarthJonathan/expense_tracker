@@ -58,6 +58,15 @@ func (c *SyncController) SyncV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logFields := log.Fields{
+		"route":       "/api/v1/sync",
+		"request_id":  r.Context().Value(constants.RequestIDCtx),
+		"groups":      len(req.Groups),
+		"accounts":    len(req.Accounts),
+		"categories":  len(req.Categories),
+		"entries":     len(req.Entries),
+		"adjustments": len(req.Adjustments),
+	}
 	result, err := c.Service.Sync(r.Context(), authUserID, req)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -69,12 +78,13 @@ func (c *SyncController) SyncV1(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadRequest
 		}
 
-		log.WithError(err).WithFields(log.Fields{
-			"route":      "/api/v1/sync",
-			"status":     status,
-			"request_id": r.Context().Value(constants.RequestIDCtx),
-			"entries":    len(req.Entries),
-		}).Error("sync failed")
+		logFields["status"] = status
+		var accessError *service.SyncRecordAccessError
+		if errors.As(err, &accessError) {
+			logFields["sync_collection"] = accessError.Collection
+			logFields["sync_record_id"] = accessError.ID
+		}
+		log.WithError(err).WithFields(logFields).Error("sync failed")
 
 		c.writeJSON(w, status, response.SyncResponse{
 			BaseResponse: response.BaseResponse{Success: false, Error: err.Error()},

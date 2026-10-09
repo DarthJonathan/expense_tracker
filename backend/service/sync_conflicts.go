@@ -18,6 +18,21 @@ import (
 var ErrSyncUpgradeRequired = errors.New("update the app to resolve sync conflicts")
 var ErrSyncRecordForbidden = errors.New("sync record is not accessible")
 
+// Identify only the submitted collection and UUID, never another user's record
+// contents or ownership. Unwrap preserves the HTTP 403 classification.
+type SyncRecordAccessError struct {
+	Collection string
+	ID         string
+}
+
+func (e *SyncRecordAccessError) Error() string {
+	return fmt.Sprintf("%s (%s record %s)", ErrSyncRecordForbidden, e.Collection, e.ID)
+}
+
+func (e *SyncRecordAccessError) Unwrap() error {
+	return ErrSyncRecordForbidden
+}
+
 // These are user-editable fields. Identity, ownership, timestamps and FX values
 // are canonical server fields and must not create conflicts on their own.
 var syncEditableFields = map[string][]string{
@@ -92,7 +107,7 @@ func readSyncRecord(tx *gorm.DB, collection, id, groupID, userID string) (any, e
 		return nil, err
 	}
 	if count > 0 {
-		return nil, ErrSyncRecordForbidden
+		return nil, &SyncRecordAccessError{Collection: collection, ID: id}
 	}
 	return nil, nil
 }

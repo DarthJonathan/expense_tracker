@@ -139,6 +139,14 @@ try {
 		await harness.beforeFetch?.(payload);
 		if (payload.sync.mode === 'push') {
 			if (++harness.pushCount === harness.failAt) return Response.json({ error: 'temporary failure' }, { status: 500 });
+			// Model the server's private-category lookup before any write. An
+			// incoming owner field must not grant access to an existing category.
+			for (const row of payload.categories) {
+				const stored = harness.serverRecords.categories.find(item => item.id === row.id);
+				if (stored?.scope === 'user' && stored.ownerUserId !== (harness.userId ?? 'test-user')) {
+					return Response.json({ error: 'sync record is not accessible' }, { status: 403 });
+				}
+			}
 			const accepted = protocol.emptySyncRecords();
 			const acceptedVersions = {};
 			const conflicts = [];
@@ -156,7 +164,9 @@ try {
 					let canonical = existing;
 					if (!equal) {
 						const timestamp = serverTime();
-						canonical = { ...row, createdAt:existing?.createdAt ?? timestamp, updatedAt:timestamp };
+						canonical = { ...row,
+							...(key === 'categories' && row.scope === 'user' ? { ownerUserId: harness.userId ?? 'test-user' } : {}),
+							createdAt:existing?.createdAt ?? timestamp, updatedAt:timestamp };
 						if (index < 0) harness.serverRecords[key].push(canonical); else harness.serverRecords[key][index] = canonical;
 					}
 					accepted[key].push(canonical);
@@ -166,7 +176,9 @@ try {
 			return Response.json({ success:true, data:{ ...accepted, acceptedVersions, conflicts, protocolVersion:3, settings, syncedAt:serverTime() } });
 		}
 		const { collection, cursor, limit, known = {} } = payload.sync;
-		const rows = harness.serverRecords[collection].filter(row => !cursor || row.id > cursor).sort((a,b) => a.id.localeCompare(b.id));
+		const rows = harness.serverRecords[collection].filter(row =>
+			(!cursor || row.id > cursor) && (collection !== 'categories' || row.scope !== 'user' || row.ownerUserId === (harness.userId ?? 'test-user'))
+		).sort((a,b) => a.id.localeCompare(b.id));
 		const pageRows = rows.slice(0,limit);
 		const hasMore = rows.length > limit;
 		const versions = Object.fromEntries(await Promise.all(pageRows.map(async row => [row.id, await protocol.recordFingerprint(row)])));
@@ -290,6 +302,37 @@ try {
 	await assert.rejects(callSync(accountSwitch), /sign-in changed during sync/);
 	delete harness.beforeFetch;
 	delete harness.userId;
+
+	// A usual-account login can encounter old private categories in IndexedDB.
+	// Keep their local edits without uploading, removing, or claiming ownership.
+	const otherPersonal = record('other-personal', { name: 'Private category', scope: 'user', ownerUserId: 'other-user' });
+	const myPersonal = record('my-personal', { scope: 'user', ownerUserId: 'test-user' });
+	const unassignedPersonal = record('unassigned-personal', { scope: 'user', ownerUserId: null });
+	const shared = record('shared-category', { scope: 'household', ownerUserId: null });
+	harness.serverRecords = { ...protocol.emptySyncRecords(), categories: [structuredClone(otherPersonal)] };
+	harness.checkpoints = new Map();
+	harness.requests = [];
+	const cached = { settings, ...protocol.emptySyncRecords(), categories: [
+		{ ...otherPersonal, name: 'Retain this offline edit' }, myPersonal, unassignedPersonal, shared
+	] };
+	const privateSynced = await callSync(cached);
+	assert.equal(privateSynced.categories.find(row => row.id === otherPersonal.id).name, 'Retain this offline edit');
+	assert.equal(harness.serverRecords.categories.find(row => row.id === otherPersonal.id).name, otherPersonal.name);
+	assert.ok(harness.serverRecords.categories.some(row => row.id === myPersonal.id));
+	assert.equal(privateSynced.categories.find(row => row.id === unassignedPersonal.id).ownerUserId, 'test-user', 'A new local category without an owner can still be assigned by the server');
+	assert.ok(harness.serverRecords.categories.some(row => row.id === shared.id));
+	assert.ok(harness.requests.filter(payload => payload.sync.mode === 'push').every(payload => payload.categories.every(row => row.id !== otherPersonal.id)));
+	assert.equal(harness.checkpoints.get('test-user:group').fingerprints.categories?.[otherPersonal.id], undefined, 'Excluded edits must not be marked as synced');
+	// Older checkpoints can remember a category that has since become private.
+	// Its absence from this user's pull must not trigger removal or a popup.
+	const olderCheckpoint = harness.checkpoints.get('test-user:group');
+	olderCheckpoint.fingerprints.categories[otherPersonal.id] = await protocol.recordFingerprint(otherPersonal);
+	(olderCheckpoint.baseVersions.categories ??= {})[otherPersonal.id] = await protocol.recordFingerprint(otherPersonal);
+	harness.requests = [];
+	const retried = await callSync(privateSynced);
+	assert.equal(retried.categories.find(row => row.id === otherPersonal.id).name, 'Retain this offline edit');
+	assert.equal(harness.checkpoints.get('test-user:group').fingerprints.categories[otherPersonal.id], olderCheckpoint.fingerprints.categories[otherPersonal.id], 'Old checkpoints must not acknowledge an excluded local edit');
+	assert.equal(harness.requests.filter(payload => payload.sync.mode === 'push').length, 0, 'Cached private records must not keep retrying');
 
 	console.log('Sync batching, server authority, conflict choices, race protection, retry, and diagnostics tests passed');
 } finally {

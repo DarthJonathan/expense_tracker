@@ -144,4 +144,35 @@ func TestSyncServerAuthorityPostgres(t *testing.T) {
 	if !errors.Is(err, ErrSyncRecordForbidden) {
 		t.Fatalf("foreign record was not rejected: %v", err)
 	}
+
+	// The entries=0 failure reported by clients can also be a cached category
+	// owned by another member of the same household. It must not be claimed by
+	// changing the payload owner, and diagnostics must identify the submitted ID.
+	otherUserID, privateCategoryID := newID(), newID()
+	otherUser := &dao.ExpenseUser{ID: otherUserID, Email: "private-sync@example.test", PasswordHash: "test", DisplayName: "Other member", GroupID: &groupID, BaseCurrency: "SGD"}
+	privateCategory := dao.ExpenseCategory{ID: privateCategoryID, GroupID: groupID, Name: "Private category", Type: "expense", Scope: "user", OwnerUserID: &otherUserID}
+	for _, fixture := range []any{otherUser, &privateCategory} {
+		if err := db.Create(fixture).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	incomingCategory := privateCategory
+	incomingCategory.OwnerUserID = &userID
+	incomingCategory.Name = "Attempt to claim cached category"
+	_, err = service.Sync(context.Background(), userID, &request.SyncRequest{
+		Settings:   request.SyncSettingsRequest{ActiveGroupID: groupID, DeviceUserID: userID},
+		Categories: []dao.ExpenseCategory{incomingCategory},
+		Sync:       &request.SyncOptions{Mode: "push", Version: 3},
+	})
+	var accessError *SyncRecordAccessError
+	if !errors.Is(err, ErrSyncRecordForbidden) || !errors.As(err, &accessError) || accessError.Collection != "categories" || accessError.ID != privateCategoryID {
+		t.Fatalf("private category rejection lost its record diagnostics: %v", err)
+	}
+	var preserved dao.ExpenseCategory
+	if err := db.Where("id = ?", privateCategoryID).First(&preserved).Error; err != nil {
+		t.Fatal(err)
+	}
+	if preserved.OwnerUserID == nil || *preserved.OwnerUserID != otherUserID || preserved.Name != privateCategory.Name {
+		t.Fatalf("private category was changed by a forbidden sync: %#v", preserved)
+	}
 }
