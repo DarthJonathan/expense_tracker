@@ -21,6 +21,7 @@
 	import AppSelect, { consumeSelectClickThroughGuard } from '$lib/components/AppSelect.svelte';
 	import StatementIngestion from '$lib/components/StatementIngestion.svelte';
 	import SyncConflictDialog from '$lib/components/SyncConflictDialog.svelte';
+	import SpendingAnalytics from '$lib/components/SpendingAnalytics.svelte';
 	import { onMount, tick } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import {
@@ -35,7 +36,7 @@
 	import { clearSession, generateApiKey, getStoredSession, login, register, type APIKeyData, type AuthSession } from '$lib/auth';
 	import { patchSettings } from '$lib/db';
 	import { deleteTransactionRemote, searchTransactionsRemote, updateTransactionRemote } from '$lib/transactions';
-	import type { CategoryScope, CategoryType, LedgerEntry, PeriodCategoryTotal, PeriodGrain, PeriodSummary } from '$lib/types';
+	import type { CategoryScope, CategoryType, LedgerEntry, PeriodCategoryTotal, PeriodGrain } from '$lib/types';
 	import {
 		cents,
 		currency as formatCurrency,
@@ -493,10 +494,6 @@
 		selectedSettingsCategoryType = normalizeCategoryType(selectedSettingsCategory.type, selectedSettingsCategory.name);
 		selectedSettingsCategoryScope = normalizeCategoryScope(selectedSettingsCategory.scope);
 	}
-	$: desktopSpendingSeries = summaries.slice(0, 8).reverse();
-	$: desktopSpendingSeriesMax = Math.max(1, ...desktopSpendingSeries.map((summary) => summary.spent));
-	$: desktopSpendingCategoryLegend = buildSpendingCategoryLegend(desktopSpendingSeries);
-	$: latestSpendingSeriesIndex = Math.max(0, desktopSpendingSeries.length - 1);
 	$: desktopHeading = getDesktopHeading(desktopScreen, activeGroup?.name);
 	$: {
 		if (typeof document !== 'undefined') {
@@ -1318,26 +1315,6 @@
 		];
 	}
 
-	function buildSpendingCategoryLegend(periods: PeriodSummary[]): StatItem[] {
-		const categoryTotals = new Map<string, StatItem>();
-		for (const period of periods) {
-			for (const category of period.categories) {
-				if (category.spent <= 0) continue;
-				const existing = categoryTotals.get(category.categoryId);
-				if (existing) {
-					existing.amount += category.spent;
-				} else {
-					categoryTotals.set(category.categoryId, {
-						name: category.categoryName,
-						color: category.categoryColor,
-						amount: category.spent
-					});
-				}
-			}
-		}
-		return [...categoryTotals.values()].sort((a, b) => b.amount - a.amount);
-	}
-
 	function buildBudgetComparisonItems(
 		expenseOnlyCategories: typeof categories,
 		periodTotals: PeriodCategoryTotal[]
@@ -1860,6 +1837,8 @@ function getEntryCategoryOptions(
 					<strong>{currency(homePersonalSpent)}</strong>
 				</article>
 			</div>
+
+			<SpendingAnalytics categories={allCategories} {entries} {baseCurrency} />
 
 			<section class="section-heading">
 				<h2>Top categories</h2>
@@ -3104,6 +3083,8 @@ function getEntryCategoryOptions(
 		</section>
 
 		<div class="desktop-grid">
+			<SpendingAnalytics categories={allCategories} {entries} {baseCurrency} />
+
 			<section class="desktop-card full-card spending-changes-card" aria-labelledby="desktop-spending-changes-heading">
 				<div class="desktop-card-head spending-changes-head">
 					<div>
@@ -3144,57 +3125,29 @@ function getEntryCategoryOptions(
 			</section>
 
 			<section class="desktop-card wide-card">
-				<div class="desktop-card-head">
-					<div>
-						<h2>Spending by category</h2>
-						<p>Period totals split across spending categories</p>
+					<div class="desktop-card-head">
+						<div>
+							<h2>Budget and expense comparison</h2>
+							<p>Category targets against current spending</p>
+						</div>
+						<button type="button" on:click={() => (desktopScreen = 'review')}>This year</button>
 					</div>
-					<AppSelect
-						ariaLabel="Desktop report period"
-						bind:value={grain}
-						options={grainOptions}
-						triggerClass="desktop-grain-trigger"
-					/>
+				<div class="bar-chart-legend">
+					<span class="spent">Spent</span>
+					<span class="target">Target</span>
 				</div>
-				{#if desktopSpendingSeries.length}
-					<div
-						class="stacked-period-chart"
-						style={`--period-count:${desktopSpendingSeries.length}`}
-					>
-						{#each desktopSpendingSeries as summary, index}
-							<div class="stacked-period-column" class:latest={index === latestSpendingSeriesIndex}>
-								<strong>{currency(summary.spent)}</strong>
-								<div class="stacked-period-track">
-									<div
-										class="stacked-period-bar"
-										style={`--height:${summary.spent > 0 ? Math.max(5, (summary.spent / desktopSpendingSeriesMax) * 100) : 0}%`}
-										role="img"
-										aria-label={`${readablePeriod(summary.periodKey, grain)} spending ${currency(summary.spent)}`}
-									>
-										{#each summary.categories.filter((category) => category.spent > 0) as category}
-											<span
-												style={`--segment:${(category.spent / Math.max(1, summary.spent)) * 100}%;--swatch:${category.categoryColor}`}
-												title={`${category.categoryName}: ${currency(category.spent)}`}
-											></span>
-										{/each}
-									</div>
-								</div>
+				<div class="bar-chart">
+					{#each budgetComparisonItems as item}
+						<div>
+							<div class="bar-stack" style={`--swatch:${item.color}`} aria-hidden="true">
+								<i class="bar-target"></i>
+								<i class="bar-spent" style={`--bar:${item.fillPercent}%`}></i>
 							</div>
-						{/each}
-					</div>
-					<div class="stacked-period-axis" style={`--period-count:${desktopSpendingSeries.length}`}>
-						{#each desktopSpendingSeries as summary, index}
-							<span class:latest={index === latestSpendingSeriesIndex}>{shortPeriodLabel(summary.periodKey, grain)}</span>
-						{/each}
-					</div>
-					<div class="stacked-period-legend">
-						{#each desktopSpendingCategoryLegend as category}
-							<span style={`--swatch:${category.color}`}>{category.name}</span>
-						{/each}
-					</div>
-				{:else}
-					<p class="muted">No spending data yet.</p>
-				{/if}
+							<span>{item.name}</span>
+							<small>{currency(item.spent)} / {currency(item.target)}</small>
+						</div>
+					{/each}
+				</div>
 			</section>
 
 			<section class="desktop-card desktop-stat-card" id="review">
@@ -3220,32 +3173,6 @@ function getEntryCategoryOptions(
 				<div class="desktop-legend">
 					{#each statItems.slice(0, 5) as item}
 						<span style={`--swatch:${item.color}`}>{item.name}</span>
-					{/each}
-				</div>
-			</section>
-
-			<section class="desktop-card wide-card">
-					<div class="desktop-card-head">
-						<div>
-							<h2>Budget and expense comparison</h2>
-							<p>Category targets against current spending</p>
-						</div>
-						<button type="button" on:click={() => (desktopScreen = 'review')}>This year</button>
-					</div>
-				<div class="bar-chart-legend">
-					<span class="spent">Spent</span>
-					<span class="target">Target</span>
-				</div>
-				<div class="bar-chart">
-					{#each budgetComparisonItems as item}
-						<div>
-							<div class="bar-stack" style={`--swatch:${item.color}`} aria-hidden="true">
-								<i class="bar-target"></i>
-								<i class="bar-spent" style={`--bar:${item.fillPercent}%`}></i>
-							</div>
-							<span>{item.name}</span>
-							<small>{currency(item.spent)} / {currency(item.target)}</small>
-						</div>
 					{/each}
 				</div>
 			</section>

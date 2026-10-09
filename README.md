@@ -100,6 +100,22 @@ The optional PostgreSQL integration checks for conflict handling, concurrent wri
 
 Failures are logged in the browser console and shown in a persistent banner with error details. The HTTP status and request ID link a failed request to frontend proxy and backend logs. Proxy connection failures return JSON with HTTP 502. To inspect Docker logs, use `docker compose logs --tail=100 frontend backend`.
 
+## Home analytics
+
+The mobile home page and desktop dashboard include a 6/12-month spending chart with household,
+personal, and category filters. Selecting a month updates its total, category breakdown, and insights.
+The current month is marked as partial and compared with the same elapsed dates in the previous
+month; completed months use full-month comparisons. Totals use the user's base currency, exclude
+income and future/deleted transactions, and retain spending in archived categories. Foreign expenses
+awaiting conversion are marked as pending rather than counted at a 1:1 exchange rate.
+
+Spending insights run on-device using repeat coffee shop purchases, frequent merchants, category
+increases, and monthly category targets. Suggestions need a minimum sample and show the recorded
+amounts behind them. Savings are optional scenarios, and budget pacing is an estimate. This is
+pattern-based analysis; it does not call an AI service or send transaction data to one.
+
+Run `npm run test:analytics` from `frontend/` for analytics checks.
+
 ## Private statement ingestion
 
 PDF statements are decoded in the browser with the bundled PDF.js worker. The PDF and extracted page text are checkpointed only in IndexedDB and are never accepted by the statement API. After parsing, the client sends normalized statement controls and transaction rows to the backend for durable review.
